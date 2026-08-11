@@ -495,6 +495,11 @@ const STUURKNOPPEN = [
   { id: 'ontwikkelkosten', measure: 'Ontwikkelkosten tijdelijk terugbrengen', effect: 47139, term: 'binnen een maand', reducesGap: true },
   { id: 'sodaq', measure: 'SODAQ-schuld uit 2023/2024 afwikkelen', effect: 43893, term: 'nader te bepalen', reducesGap: true },
   { id: 'voorraad_facturen', measure: 'Voorraad versneld omzetten in facturen', effect: null, effectLabel: 'tot € 1.158.000', term: 'doorlopend', reducesGap: false },
+  // Toegevoegd 11 augustus (buiten de oorspronkelijke prognose-tabel om, op aangeven van
+  // Bart): extra financiering ophalen bij bestaande aandeelhouders. Dit bedrag staat niet
+  // in Basetime_cashflow_forecast.xlsx en is dus geen Odoo-afgeleid cijfer, maar een door
+  // Bart ingeschat streefbedrag.
+  { id: 'aandeelhouders', measure: 'Extra financiering ophalen bij bestaande aandeelhouders', effect: 500000, term: 'binnen een maand', reducesGap: true },
 ];
 
 const BASELINE_GAP = 453738; // benodigde storting, scenario C, 7 augustus 2026
@@ -560,9 +565,19 @@ function renderActieplan(){
   document.getElementById('actieplan-progress-fill').style.width = pct + '%';
 
   const remainingGap = BASELINE_GAP - gapReduction;
-  document.getElementById('gap-value').textContent = fmtEUR0.format(remainingGap);
+  const gapValueEl = document.getElementById('gap-value');
+  if (remainingGap <= 0) {
+    gapValueEl.textContent = 'Geen tekort meer';
+    gapValueEl.style.color = '#1a7f37';
+  } else {
+    gapValueEl.textContent = fmtEUR0.format(remainingGap);
+    gapValueEl.style.color = '';
+  }
+  const surplusNote = remainingGap < 0
+    ? ' Dit is inclusief een geschat overschot van ' + fmtEUR0.format(Math.abs(remainingGap)) + ' boven het startpunt — bij afgevinkte maatregelen die groter zijn dan het resterende tekort.'
+    : '';
   document.getElementById('gap-sub').textContent =
-    'Startpunt €' + BASELINE_GAP.toLocaleString('nl-NL') + ' (scenario C, 7 augustus) min de afgevinkte maatregelen die daar nog niet in zaten (' + fmtEUR0.format(gapReduction) + ').';
+    'Startpunt €' + BASELINE_GAP.toLocaleString('nl-NL') + ' (scenario C, 7 augustus) min de afgevinkte maatregelen die daar nog niet in zaten (' + fmtEUR0.format(gapReduction) + ').' + surplusNote;
 }
 
 const tooltip = document.getElementById('tooltip');
