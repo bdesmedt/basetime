@@ -154,6 +154,19 @@
   .tab-btn:hover { color: var(--text-primary); }
   .tab-btn.active { color: var(--text-primary); border-bottom-color: var(--series-1); }
   .tab-meta-row { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+
+  .snapshot-banner { background: rgba(250,178,25,0.12); border: 1px solid var(--status-warning); border-radius: 8px; padding: 12px 16px; font-size: 13px; color: var(--text-primary); margin-bottom: 18px; }
+  .progress-track { background: var(--gridline); border-radius: 6px; height: 10px; overflow: hidden; margin: 10px 0 4px; }
+  .progress-fill { background: var(--status-good); height: 100%; border-radius: 6px 0 0 6px; transition: width 0.2s; }
+  .action-list { display: flex; flex-direction: column; gap: 8px; }
+  .action-row { display: flex; align-items: flex-start; gap: 12px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .action-row input[type="checkbox"] { width: 18px; height: 18px; margin-top: 2px; flex-shrink: 0; cursor: pointer; }
+  .action-row .action-main { flex: 1; }
+  .action-row .action-measure { font-size: 13.5px; color: var(--text-primary); font-weight: 600; }
+  .action-row.done .action-measure { text-decoration: line-through; color: var(--text-muted); }
+  .action-row .action-meta { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .action-row .action-effect { font-size: 14px; font-weight: 650; color: var(--text-primary); white-space: nowrap; text-align: right; }
+  .action-row.done .action-effect { color: var(--text-muted); }
 </style>
 </head>
 <body>
@@ -177,6 +190,7 @@
   <nav class="tabs">
     <button class="tab-btn active" id="tab-btn-overview" onclick="switchTab('overview')">Overzicht</button>
     <button class="tab-btn" id="tab-btn-voorraad" onclick="switchTab('voorraad')">Voorraad</button>
+    <button class="tab-btn" id="tab-btn-actieplan" onclick="switchTab('actieplan')">Actieplan</button>
   </nav>
 
   <div id="tab-overview" class="tab-panel">
@@ -372,6 +386,32 @@
 
   </div>
 
+  <div id="tab-actieplan" class="tab-panel" style="display:none">
+
+    <div class="snapshot-banner">
+      Momentopname uit de kasstroomprognose van 7 augustus 2026 — dit zijn beslissingen/onderhandelingen, geen live Odoo-cijfer. Vinkjes worden onthouden in deze browser, niet in Odoo of op de server.
+    </div>
+
+    <h2 class="section">Stuurknoppen — cashflowprognose 7 augustus</h2>
+    <p class="section-note">Op 7 augustus was de benodigde storting om de kredietlimiet niet te raken €453.738–604.729, afhankelijk van scenario. Deze maatregelen verkleinen dat gat. Volledige uitwerking in <code>Basetime_cashflow_forecast.xlsx</code>.</p>
+
+    <div class="tiles" style="margin-bottom:18px;">
+      <div class="tile">
+        <p class="label">Resterend financieringsgat (schatting)</p>
+        <div class="value" id="gap-value" style="font-size:22px;">–</div>
+        <p class="sub" id="gap-sub"></p>
+      </div>
+      <div class="tile" style="grid-column: span 3;">
+        <p class="label">Afgevinkt van het vaste effect (excl. de open post "voorraad versneld omzetten")</p>
+        <div class="value" id="actieplan-progress-value" style="font-size:20px;">–</div>
+        <div class="progress-track"><div class="progress-fill" id="actieplan-progress-fill" style="width:0%"></div></div>
+      </div>
+    </div>
+
+    <div class="action-list" id="action-list"></div>
+
+  </div>
+
   <footer>Basetime B.V. · basetimebv.odoo.com · KPI-dashboard</footer>
 </div>
 
@@ -425,12 +465,104 @@ function toggleTheme(){
 
 let inventoryLoaded = false;
 
+const TAB_NAMES = ['overview', 'voorraad', 'actieplan'];
+
 function switchTab(name){
-  document.getElementById('tab-overview').style.display = name === 'overview' ? 'block' : 'none';
-  document.getElementById('tab-voorraad').style.display = name === 'voorraad' ? 'block' : 'none';
-  document.getElementById('tab-btn-overview').classList.toggle('active', name === 'overview');
-  document.getElementById('tab-btn-voorraad').classList.toggle('active', name === 'voorraad');
+  TAB_NAMES.forEach(n => {
+    document.getElementById('tab-' + n).style.display = (n === name) ? 'block' : 'none';
+    document.getElementById('tab-btn-' + n).classList.toggle('active', n === name);
+  });
   if (name === 'voorraad' && !inventoryLoaded) loadInventoryData(false);
+  if (name === 'actieplan' && !actieplanRendered) renderActieplan();
+}
+
+let actieplanRendered = false;
+const ACTIEPLAN_STORAGE_KEY = 'basetime_actieplan_v1';
+
+// Bron: cashflow-runway-aug2026-jan2027.md (project "Basetime"), tabel "Stuurknoppen
+// binnen de horizon" — snapshot van 7 augustus 2026, bewust NIET live herberekend
+// (dit zijn beslissingen/onderhandelingen, geen Odoo-cijfer).
+// reducesGap: false betekent dat het effect al verwerkt zit in BASELINE_GAP (de
+// €453.738 van scenario C gaat al uit van uitstel van P00025/P00026 en een gedeeltelijke
+// afroep van P00033 — dat afvinken verandert dus het resterende gat niet, het is al
+// "in" de baseline). Bij de overige vier is het effect nog NIET in die baseline verwerkt
+// — die trekken we er dus wel van af zodra ze zijn afgevinkt.
+const STUURKNOPPEN = [
+  { id: 'p00025', measure: 'Inkooporder P00025 uitstellen of annuleren', effect: 150990, term: 'direct', reducesGap: false },
+  { id: 'p00033', measure: 'P00033 gedeeltelijk afroepen in plaats van 488 st ineens', effect: 147464, term: 'direct', reducesGap: false },
+  { id: 'faber', measure: 'Betalingsregeling met Faber over de openstaande €179.130', effect: 179130, term: 'direct', reducesGap: true },
+  { id: 'mgmtfee', measure: 'Managementfee tijdelijk opschorten of achterstellen', effect: 105000, term: 'direct', reducesGap: true },
+  { id: 'ontwikkelkosten', measure: 'Ontwikkelkosten tijdelijk terugbrengen', effect: 47139, term: 'binnen een maand', reducesGap: true },
+  { id: 'sodaq', measure: 'SODAQ-schuld uit 2023/2024 afwikkelen', effect: 43893, term: 'nader te bepalen', reducesGap: true },
+  { id: 'voorraad_facturen', measure: 'Voorraad versneld omzetten in facturen', effect: null, effectLabel: 'tot € 1.158.000', term: 'doorlopend', reducesGap: false },
+];
+
+const BASELINE_GAP = 453738; // benodigde storting, scenario C, 7 augustus 2026
+
+function loadActieplanState(){
+  try {
+    return JSON.parse(localStorage.getItem(ACTIEPLAN_STORAGE_KEY) || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveActieplanState(state){
+  try {
+    localStorage.setItem(ACTIEPLAN_STORAGE_KEY, JSON.stringify(state));
+  } catch (e) { /* privémodus of quota — negeren, checklist werkt dan alleen binnen deze sessie */ }
+}
+
+function toggleAction(id){
+  const state = loadActieplanState();
+  state[id] = !state[id];
+  saveActieplanState(state);
+  renderActieplan();
+}
+
+function renderActieplan(){
+  actieplanRendered = true;
+  const state = loadActieplanState();
+  const list = document.getElementById('action-list');
+  list.innerHTML = '';
+
+  let fixedTotal = 0, fixedDone = 0, gapReduction = 0;
+  STUURKNOPPEN.forEach(item => {
+    const done = !!state[item.id];
+    if (item.effect !== null){
+      fixedTotal += item.effect;
+      if (done){
+        fixedDone += item.effect;
+        if (item.reducesGap) gapReduction += item.effect;
+      }
+    }
+    const row = document.createElement('div');
+    row.className = 'action-row' + (done ? ' done' : '');
+    const effectText = item.effect !== null ? fmtEUR0.format(item.effect) : item.effectLabel;
+    const baselineNote = (item.effect !== null && !item.reducesGap)
+      ? '<div class="action-meta" style="font-style:italic;">Al verwerkt in het startpunt van €453.738 hieronder — afvinken verandert het resterende gat niet</div>'
+      : '';
+    row.innerHTML = `
+      <input type="checkbox" ${done ? 'checked' : ''} onchange="toggleAction('${item.id}')">
+      <div class="action-main">
+        <div class="action-measure">${item.measure}</div>
+        <div class="action-meta">Termijn: ${item.term}</div>
+        ${baselineNote}
+      </div>
+      <div class="action-effect">${effectText}</div>
+    `;
+    list.appendChild(row);
+  });
+
+  const pct = fixedTotal ? Math.round(fixedDone / fixedTotal * 100) : 0;
+  document.getElementById('actieplan-progress-value').textContent =
+    fmtEUR0.format(fixedDone) + ' van ' + fmtEUR0.format(fixedTotal) + ' (' + pct + '%)';
+  document.getElementById('actieplan-progress-fill').style.width = pct + '%';
+
+  const remainingGap = BASELINE_GAP - gapReduction;
+  document.getElementById('gap-value').textContent = fmtEUR0.format(remainingGap);
+  document.getElementById('gap-sub').textContent =
+    'Startpunt €' + BASELINE_GAP.toLocaleString('nl-NL') + ' (scenario C, 7 augustus) min de afgevinkte maatregelen die daar nog niet in zaten (' + fmtEUR0.format(gapReduction) + ').';
 }
 
 const tooltip = document.getElementById('tooltip');
