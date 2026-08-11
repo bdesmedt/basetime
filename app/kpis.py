@@ -400,6 +400,152 @@ def fetch_customer_revenue_concentration(client: OdooClient, months: int, top_n:
     }
 
 
+# --- Voorraad ----------------------------------------------------------------
+# Basetime gebruikt in Odoo een periodiek voorraadstelsel (zie de afsluitmemo van
+# juli 2026): er wordt niet automatisch een boekhoudkundige voorraadwaarderingsregel
+# per mutatie bijgehouden. `stock.quant.value` is Odoo's eigen (live) waardering per
+# voorraadregel op standaard-/gemiddelde kostprijs — bruikbaar als actuele indicatie,
+# maar niet gegarandeerd gelijk aan het grootboeksaldo. Zie ook de toelichting op het
+# dashboard zelf.
+
+def _fetch_stock_value_by_product(client: OdooClient) -> list[dict]:
+    """Actuele voorraadwaarde per product in interne locaties (magazijnen), niet in
+    klant-/leverancierslocaties. Eén product kan meerdere stock.quant-regels hebben
+    (bv. bij serienummerregistratie, zoals bij Locator One) — die worden hier
+    samengevoegd tot één regel per product."""
+    rows = client.search_read(
+        "stock.quant",
+        [["location_id.usage", "=", "internal"], ["quantity", "!=", 0]],
+        ["product_id", "quantity", "value"],
+    )
+    by_product: dict[Any, dict] = {}
+    for row in rows:
+        pid = row["product_id"][0] if row.get("product_id") else None
+        name = row["product_id"][1] if row.get("product_id") else "Onbekend"
+        entry = by_product.setdefault(pid, {"name": name, "quantity": 0.0, "value": 0.0})
+        entry["quantity"] += row.get("quantity") or 0
+        entry["value"] += row.get("value") or 0
+    products = [
+        {"name": p["name"], "quantity": round(p["quantity"], 2), "value": round(p["value"], 2)}
+        for p in by_product.values()
+    ]
+    products.sort(key=lambda p: -p["value"])
+    return products
+
+
+def fetch_stock_value(client: OdooClient, top_n: int) -> dict:
+    products = _fetch_stock_value_by_product(client)
+    total = round(sum(p["value"] for p in products), 2)
+    return {"total": total, "by_product": products[:top_n]}
+
+
+def fetch_stock_value_detail(client: OdooClient) -> list[dict]:
+    """Niet ingekort tot top-N, voor het doorklikscherm bij voorraadwaarde."""
+    return _fetch_stock_value_by_product(client)
+
+
+def _fetch_stock_move_lines(client: OdooClient, start: date, end: date) -> list[dict]:
+    """Losse voorraadmutaties binnen een periode — gedeeld door de maandgrafiek
+    (fetch_stock_movements) en het doorklikscherm (fetch_stock_movement_detail). Let op:
+    `stock.move.line.date` is een Datetime-veld (zelfde categorie als
+    `sale.order.date_order`) — we bucketen daarom zelf per maand in Python in plaats van
+    op Odoo's read_group __range te vertrouwen (zie fetch_order_intake hierboven)."""
+    return client.search_read(
+        "stock.move.line",
+        [
+            ["state", "=", "done"],
+            ["date", ">=", _iso(start)],
+            ["date", "<", _iso(end)],
+        ],
+        ["date", "quantity", "product_id", "location_usage", "location_dest_usage"],
+    )
+
+
+def _classify_move_direction(row: dict) -> str | None:
+    """'in' = ontvangst vanaf een niet-interne locatie (leverancier/productie) naar een
+    interne locatie. 'out' = levering vanaf een interne locatie naar een niet-interne
+    locatie (klant/afschrijving). Interne overboekingen (bv. tussen twee eigen
+    magazijnlocaties) veranderen de totale voorraad niet en tellen niet mee."""
+    src, dst = row.get("location_usage"), row.get("location_dest_usage")
+    if src != "internal" and dst == "internal":
+        return "in"
+    if src == "internal" and dst != "internal":
+        return "out"
+    return None
+
+
+def fetch_stock_movements(client: OdooClient, windows: list[tuple[date, date]]) -> dict:
+    start, end = windows[0][0], windows[-1][1]
+    rows = _fetch_stock_move_lines(client, start, end)
+    units_in = {_iso(mstart): 0.0 for mstart, _ in windows}
+    units_out = {_iso(mstart): 0.0 for mstart, _ in windows}
+    for row in rows:
+        direction = _classify_move_direction(row)
+        if direction is None:
+            continue
+        move_date = row.get("date")
+        if not move_date:
+            continue
+        d = datetime.strptime(move_date[:10], "%Y-%m-%d").date()
+        month_key = _iso(date(d.year, d.month, 1))
+        qty = row.get("quantity") or 0
+        bucket = units_in if direction == "in" else units_out
+        if month_key in bucket:
+            bucket[month_key] += qty
+    return {
+        "in": [round(units_in[_iso(mstart)], 2) for mstart, _ in windows],
+        "out": [round(units_out[_iso(mstart)], 2) for mstart, _ in windows],
+    }
+
+
+def fetch_stock_movement_detail(client: OdooClient, windows: list[tuple[date, date]]) -> list[dict]:
+    """Elke losse mutatie binnen de getoonde maanden, voor het doorklikscherm bij
+    voorraadbewegingen. Zelfde selectie/classificatie als fetch_stock_movements."""
+    start, end = windows[0][0], windows[-1][1]
+    rows = _fetch_stock_move_lines(client, start, end)
+    detail = []
+    for row in rows:
+        direction = _classify_move_direction(row)
+        if direction is None:
+            continue
+        detail.append(
+            {
+                "product": row["product_id"][1] if row.get("product_id") else "Onbekend",
+                "date": (row.get("date") or "")[:10] or None,
+                "quantity": round(row.get("quantity") or 0, 2),
+                "direction": "Ontvangen" if direction == "in" else "Geleverd",
+            }
+        )
+    detail.sort(key=lambda d: d.get("date") or "", reverse=True)
+    return detail
+
+
+def build_inventory_payload() -> dict:
+    client = get_client()
+    windows = complete_month_windows(config.MONTHS_LOOKBACK)
+    month_labels = [DUTCH_MONTH_ABBR[w[0].month] for w in windows]
+
+    stock = fetch_stock_value(client, config.TOP_STOCK_PRODUCTS_N)
+    movements = fetch_stock_movements(client, windows)
+    _, cogs = fetch_revenue_and_cogs(client, windows)
+    avg_cogs = sum(cogs) / len(cogs) if cogs else 0
+    months_coverage = round(stock["total"] / avg_cogs, 1) if avg_cogs else None
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "window": {
+            "labels": month_labels,
+            "label_text": f"laatste {config.MONTHS_LOOKBACK} volledige maanden",
+        },
+        "stock_value": stock,
+        "movements": movements,
+        "coverage": {
+            "months": months_coverage,
+            "avg_monthly_cogs": round(avg_cogs, 2),
+        },
+    }
+
+
 # --- Doorklik-detailschermen: volledige (niet-ingekorte) lijsten -----------
 # Deze functies leveren de data voor de "Bekijk alle" doorklik-knoppen op het
 # dashboard. Ze gebruiken zoveel mogelijk dezelfde domeinen/selecties als de
@@ -557,6 +703,10 @@ DETAIL_FETCHERS = {
     ),
     "purchase_backlog": lambda client: fetch_purchase_backlog_detail(client),
     "order_intake": lambda client: fetch_order_intake_detail(
+        client, complete_month_windows(config.MONTHS_LOOKBACK)
+    ),
+    "stock_value": lambda client: fetch_stock_value_detail(client),
+    "stock_movements": lambda client: fetch_stock_movement_detail(
         client, complete_month_windows(config.MONTHS_LOOKBACK)
     ),
 }

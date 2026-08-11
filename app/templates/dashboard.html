@@ -148,6 +148,12 @@
   .modal-body { overflow-y: auto; padding: 4px 20px 18px; }
   .modal-body table.data-table th { position: sticky; top: 0; background: var(--surface-1); }
   .modal-state { padding: 30px 0; text-align: center; color: var(--text-muted); font-size: 13px; }
+
+  .tabs { display: flex; gap: 4px; margin: 18px 0 4px; border-bottom: 1px solid var(--border); }
+  .tab-btn { background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-secondary); font-size: 13.5px; font-weight: 600; padding: 8px 4px; margin-right: 18px; cursor: pointer; }
+  .tab-btn:hover { color: var(--text-primary); }
+  .tab-btn.active { color: var(--text-primary); border-bottom-color: var(--series-1); }
+  .tab-meta-row { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 </style>
 </head>
 <body>
@@ -167,6 +173,13 @@
       <button class="btn" onclick="toggleTheme()">Donker / licht</button>
     </div>
   </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" id="tab-btn-overview" onclick="switchTab('overview')">Overzicht</button>
+    <button class="tab-btn" id="tab-btn-voorraad" onclick="switchTab('voorraad')">Voorraad</button>
+  </nav>
+
+  <div id="tab-overview" class="tab-panel">
 
   <div class="banner error" id="banner-error"></div>
   <div class="banner warn" id="banner-warn"></div>
@@ -296,6 +309,69 @@
     </div>
   </div>
 
+  </div>
+
+  <div id="tab-voorraad" class="tab-panel" style="display:none">
+
+    <div class="tab-meta-row">
+      <span id="inventory-last-updated" style="color:var(--text-muted);font-size:12.5px;"></span>
+      <button class="btn" onclick="loadInventoryData(true)">Vernieuwen</button>
+    </div>
+
+    <div class="banner error" id="inventory-banner-error"></div>
+    <div class="banner warn" id="inventory-banner-warn"></div>
+    <div class="skeleton" id="inventory-skeleton">Voorraadgegevens ophalen uit Odoo…</div>
+
+    <div id="inventory-app" style="display:none">
+
+      <h2 class="section">Voorraad — vandaag</h2>
+      <div class="tiles" id="tiles-inventory"></div>
+
+      <h2 class="section">Voorraadwaarde per product</h2>
+      <p class="section-note">Actuele waarde per artikel in interne locaties (magazijn), op basis van Odoo's eigen voorraadwaardering per stuk (standaard-/gemiddelde kostprijs) — zie de toelichting onderaan over het periodieke voorraadstelsel.</p>
+      <div class="charts">
+        <div class="chart-card" style="grid-column: 1 / -1;">
+          <div class="heading-row">
+            <h3 id="stock-value-heading">Grootste posten naar waarde</h3>
+            <button class="detail-link" onclick="openDetailModal('stock_value')">Bekijk alle producten →</button>
+          </div>
+          <table class="data-table" id="stock-value-table">
+            <thead><tr><th>Product</th><th>Aantal</th><th>Waarde (€)</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <h2 class="section">Voorraadbewegingen per maand</h2>
+      <p class="section-note" id="note-movements"></p>
+      <div class="charts">
+        <div class="chart-card" style="grid-column: 1 / -1;">
+          <div class="heading-row">
+            <h3>Ontvangen vs. geleverd (stuks)</h3>
+            <button class="detail-link" onclick="openDetailModal('stock_movements')">Bekijk alle mutaties →</button>
+          </div>
+          <p class="chart-sub" id="sub-movements"></p>
+          <div class="legend">
+            <span class="key"><span class="swatch" style="background:var(--series-1)"></span>Ontvangen</span>
+            <span class="key"><span class="swatch" style="background:var(--series-2)"></span>Geleverd</span>
+          </div>
+          <svg id="chart-movements" width="100%" height="220" viewBox="0 0 1080 220" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+      </div>
+
+      <h2 class="section">Aandachtspunten voorraad</h2>
+      <div class="notes">
+        <ul>
+          <li><b>Voorraadwaarde</b> komt uit Odoo's eigen voorraadwaardering per artikel (standaard-/gemiddelde kostprijs), niet uit een boekhoudkundige tussenrekening. Basetime gebruikt in Odoo een periodiek voorraadstelsel (zie de afsluitmemo) — dit cijfer is een actuele indicatie voor sturing, geen grootboeksaldo, en sluit dus niet automatisch aan op de balans.</li>
+          <li><b>Voorraadrotatie/dekking</b> = voorraadwaarde nu ÷ gemiddelde kostprijs van de omzet per maand over de getoonde periode — hoeveel maanden verkoop de huidige voorraad dekt bij het huidige tempo, blended over alle producten. Dit verbergt grote verschillen per artikel (sommige posten liggen al 20+ maanden, andere zijn juist bijna op) — voor sturing per inkooporder blijft de eerdere cashflowprognose-analyse relevant.</li>
+          <li><b>Voorraadbewegingen</b> telt alleen mutaties van/naar interne locaties: ontvangst vanaf leverancier/productie, en levering aan klanten. Interne overboekingen tussen eigen magazijnlocaties tellen niet mee omdat die de totale voorraad niet veranderen.</li>
+        </ul>
+      </div>
+
+    </div>
+
+  </div>
+
   <footer>Basetime B.V. · basetimebv.odoo.com · KPI-dashboard</footer>
 </div>
 
@@ -319,6 +395,19 @@
 </div>
 
 <script>
+// Drempel tegen rechtsklik/devtools — geen echte beveiliging (iedereen met wat
+// technische kennis omzeilt dit via het browsermenu of door JS uit te zetten),
+// puur om casual meekijken/kopiëren iets lastiger te maken.
+document.addEventListener('contextmenu', (e) => e.preventDefault());
+document.addEventListener('keydown', (e) => {
+  const key = (e.key || '').toLowerCase();
+  const blocked =
+    key === 'f12' ||
+    ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'j', 'c'].includes(key)) ||
+    ((e.ctrlKey || e.metaKey) && key === 'u');
+  if (blocked) e.preventDefault();
+});
+
 const fmtEUR0 = new Intl.NumberFormat('nl-NL', {style:'currency', currency:'EUR', maximumFractionDigits:0});
 const fmtEURK = (v) => {
   const a = Math.abs(v);
@@ -332,6 +421,16 @@ function toggleTheme(){
   const root = document.documentElement;
   if (root.getAttribute('data-theme') === 'dark') { root.removeAttribute('data-theme'); }
   else { root.setAttribute('data-theme','dark'); }
+}
+
+let inventoryLoaded = false;
+
+function switchTab(name){
+  document.getElementById('tab-overview').style.display = name === 'overview' ? 'block' : 'none';
+  document.getElementById('tab-voorraad').style.display = name === 'voorraad' ? 'block' : 'none';
+  document.getElementById('tab-btn-overview').classList.toggle('active', name === 'overview');
+  document.getElementById('tab-btn-voorraad').classList.toggle('active', name === 'voorraad');
+  if (name === 'voorraad' && !inventoryLoaded) loadInventoryData(false);
 }
 
 const tooltip = document.getElementById('tooltip');
@@ -527,6 +626,36 @@ function drawHBar(svgId, data){
   svg.parentElement.appendChild(legend);
 }
 
+function drawMovementsBar(svgId, labels, seriesIn, seriesOut, colorIn, colorOut){
+  const svg = document.getElementById(svgId);
+  const W=1080,H=220, ML=40, MR=16, MT=14, MB=28;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  const fmtUnits = (v) => Math.round(v).toLocaleString('nl-NL') + ' stuks';
+  if (!labels.length){ svg.innerHTML = ''; return; }
+  const maxV = Math.max(...seriesIn, ...seriesOut, 1) * 1.12;
+  const bandW = plotW/labels.length;
+  const barW = Math.min(30, bandW*0.30);
+  let s = `<g>`;
+  for(let g=0;g<=4;g++){
+    const y = MT + plotH - g*plotH/4;
+    s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+    s += `<text class="axis-label" x="${ML}" y="${y-3}">${Math.round(g*maxV/4)}</text>`;
+  }
+  labels.forEach((lab,i)=>{
+    const cx = ML + bandW*i + bandW/2;
+    const xa = cx - barW - 2, xb = cx + 2;
+    const ha = seriesIn[i]/maxV*plotH, hb = seriesOut[i]/maxV*plotH;
+    const ya = MT+plotH-ha, yb = MT+plotH-hb;
+    s += `<rect data-tip="${lab}|Ontvangen|${fmtUnits(seriesIn[i])}" x="${xa}" y="${ya}" width="${barW}" height="${ha}" rx="3" fill="${colorIn}"/>`;
+    s += `<rect data-tip="${lab}|Geleverd|${fmtUnits(seriesOut[i])}" x="${xb}" y="${yb}" width="${barW}" height="${hb}" rx="3" fill="${colorOut}"/>`;
+    s += `<text class="axis-label" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+  });
+  s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${MT+plotH}" y2="${MT+plotH}"/>`;
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
 let currentPayload = null;
 
 function updateLiquidityTiles(){
@@ -711,6 +840,8 @@ const DETAIL_TITLES = {
   customer_concentration: 'Alle klanten naar gefactureerde omzet',
   purchase_backlog: 'Alle open inkooporders',
   order_intake: 'Alle bevestigde orders (order intake)',
+  stock_value: 'Alle producten op voorraad (naar waarde)',
+  stock_movements: 'Alle voorraadmutaties',
 };
 
 async function openDetailModal(key){
@@ -840,6 +971,92 @@ function renderDetailModal(){
     ];
     body.innerHTML = detailTable(cols, rows);
     return;
+  }
+
+  if (key === 'stock_value'){
+    const rows = q ? data.filter(d => d.name.toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' producten op voorraad';
+    const cols = [
+      {label:'Product', fmt:r=>r.name},
+      {label:'Aantal', fmt:r=>r.quantity},
+      {label:'Waarde (€)', fmt:r=>fmtEUR0.format(r.value)},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+
+  if (key === 'stock_movements'){
+    const rows = q ? data.filter(d => d.product.toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' mutaties';
+    const cols = [
+      {label:'Product', fmt:r=>r.product},
+      {label:'Datum', fmt:r=>r.date||'–'},
+      {label:'Richting', fmt:r=>r.direction},
+      {label:'Aantal', fmt:r=>r.quantity},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+}
+
+let currentInventoryPayload = null;
+
+function renderInventory(payload){
+  currentInventoryPayload = payload;
+  document.getElementById('inventory-skeleton').style.display = 'none';
+  document.getElementById('inventory-app').style.display = 'block';
+  document.getElementById('inventory-last-updated').textContent = 'Bijgewerkt: ' + new Date(payload.generated_at).toLocaleString('nl-NL');
+
+  const errBanner = document.getElementById('inventory-banner-error');
+  const warnBanner = document.getElementById('inventory-banner-warn');
+  errBanner.style.display = 'none';
+  warnBanner.style.display = 'none';
+  if (payload.stale_error){
+    warnBanner.style.display = 'block';
+    warnBanner.textContent = 'Kon geen verse voorraaddata ophalen (' + payload.stale_error + '). Cijfers hieronder zijn de laatst bekende.';
+  }
+
+  const tiles = document.getElementById('tiles-inventory');
+  tiles.innerHTML = '';
+  tiles.appendChild(tile('Voorraadwaarde (nu)', fmtEUR0.format(payload.stock_value.total), 'op basis van standaard-/gemiddelde kostprijs, interne locaties'));
+  const cov = payload.coverage;
+  const covText = (cov.months === null || cov.months === undefined) ? 'n.v.t.' : cov.months + ' maanden';
+  tiles.appendChild(tile('Voorraadrotatie (dekking)', covText, 'bij gem. kostprijs omzet ' + fmtEUR0.format(cov.avg_monthly_cogs) + '/mnd'));
+
+  document.getElementById('stock-value-heading').textContent = 'Grootste posten naar waarde (top ' + payload.stock_value.by_product.length + ')';
+  const svBody = document.querySelector('#stock-value-table tbody');
+  svBody.innerHTML = '';
+  payload.stock_value.by_product.forEach(p=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">${p.name}</td><td>${p.quantity}</td><td>${fmtEUR0.format(p.value)}</td>`;
+    svBody.appendChild(tr);
+  });
+
+  const labels = payload.window.labels;
+  document.getElementById('sub-movements').textContent = 'Per maand (stuks)';
+  document.getElementById('note-movements').textContent = 'Ontvangen = van leverancier/productie naar interne locatie. Geleverd = van interne locatie naar klant. Over ' + payload.window.label_text + '.';
+  drawMovementsBar('chart-movements', labels, payload.movements.in, payload.movements.out, css('--series-1'), css('--series-2'));
+}
+
+async function loadInventoryData(forceRefresh){
+  try{
+    document.getElementById('inventory-skeleton').style.display = 'block';
+    document.getElementById('inventory-app').style.display = 'none';
+    document.getElementById('inventory-banner-error').style.display = 'none';
+    const resp = await fetch('/api/inventory' + (forceRefresh ? '?refresh=1' : ''));
+    if (!resp.ok){
+      const body = await resp.json().catch(()=>({detail: resp.statusText}));
+      throw new Error(body.detail || resp.statusText);
+    }
+    const payload = await resp.json();
+    inventoryLoaded = true;
+    renderInventory(payload);
+  } catch (err){
+    document.getElementById('inventory-skeleton').style.display = 'none';
+    document.getElementById('inventory-app').style.display = 'none';
+    const errBanner = document.getElementById('inventory-banner-error');
+    errBanner.style.display = 'block';
+    errBanner.textContent = 'Kon de voorraaddata niet laden: ' + err.message;
   }
 }
 

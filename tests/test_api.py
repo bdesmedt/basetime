@@ -193,3 +193,75 @@ def test_api_details_falls_back_to_stale_data_on_odoo_error(monkeypatch):
     resp = client.get("/api/details/purchase_backlog", headers=_auth_header("testuser", "testpass"))
     assert resp.status_code == 200
     assert resp.json() == stale_rows
+
+
+# --- /api/inventory — voorraadtab -------------------------------------------
+
+FAKE_INVENTORY_PAYLOAD = {
+    "generated_at": "2026-08-11T12:00:00+00:00",
+    "window": {"labels": ["jun", "jul"], "label_text": "laatste 2 volledige maanden"},
+    "stock_value": {"total": 2172.0, "by_product": [{"name": "AC-103", "quantity": 38, "value": 1330.0}]},
+    "movements": {"in": [10.0, 4.0], "out": [3.0, 8.0]},
+    "coverage": {"months": 12.3, "avg_monthly_cogs": 35000.0},
+}
+
+
+def test_api_inventory_requires_auth():
+    client = TestClient(main.app)
+    resp = client.get("/api/inventory")
+    assert resp.status_code == 401
+
+
+def test_api_inventory_returns_payload_and_uses_cache(monkeypatch):
+    call_count = {"n": 0}
+
+    def fake_build_inventory_payload():
+        call_count["n"] += 1
+        return FAKE_INVENTORY_PAYLOAD
+
+    monkeypatch.setattr(main.kpis, "build_inventory_payload", fake_build_inventory_payload)
+    main._inventory_cache["data"] = None
+    main._inventory_cache["fetched_at"] = 0.0
+
+    client = TestClient(main.app)
+    headers = _auth_header("testuser", "testpass")
+
+    resp1 = client.get("/api/inventory", headers=headers)
+    assert resp1.status_code == 200
+    assert resp1.json()["stock_value"]["total"] == 2172.0
+    assert call_count["n"] == 1
+
+    resp2 = client.get("/api/inventory", headers=headers)
+    assert resp2.status_code == 200
+    assert call_count["n"] == 1  # binnen cache-periode, geen nieuwe Odoo-aanroep
+
+    resp3 = client.get("/api/inventory?refresh=1", headers=headers)
+    assert resp3.status_code == 200
+    assert call_count["n"] == 2
+
+
+def test_api_inventory_falls_back_to_stale_data_on_odoo_error(monkeypatch):
+    main._inventory_cache["data"] = dict(FAKE_INVENTORY_PAYLOAD)
+    main._inventory_cache["fetched_at"] = 0.0
+
+    def failing_build_inventory_payload():
+        raise RuntimeError("Odoo-authenticatie mislukt")
+
+    monkeypatch.setattr(main.kpis, "build_inventory_payload", failing_build_inventory_payload)
+    client = TestClient(main.app)
+    resp = client.get("/api/inventory", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 200
+    assert "Odoo-authenticatie mislukt" in resp.json()["stale_error"]
+
+
+def test_api_inventory_returns_502_when_no_cache_and_odoo_fails(monkeypatch):
+    main._inventory_cache["data"] = None
+    main._inventory_cache["fetched_at"] = 0.0
+
+    def failing_build_inventory_payload():
+        raise RuntimeError("Odoo-authenticatie mislukt")
+
+    monkeypatch.setattr(main.kpis, "build_inventory_payload", failing_build_inventory_payload)
+    client = TestClient(main.app)
+    resp = client.get("/api/inventory", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 502

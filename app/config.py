@@ -66,6 +66,9 @@ TOP_PIPELINE_DEALS = int(_get_env("TOP_PIPELINE_DEALS", "10"))
 # pipeline-concentratie).
 TOP_CUSTOMERS_N = int(_get_env("TOP_CUSTOMERS_N", "5"))
 
+# Aantal producten dat in de "grootste voorraadposten"-tabel komt (voorraadtab).
+TOP_STOCK_PRODUCTS_N = int(_get_env("TOP_STOCK_PRODUCTS_N", "10"))
+
 # Aantal maanden dat wordt meegenomen voor de klantconcentratie-KPI. Losstaand van
 # MONTHS_LOOKBACK omdat concentratie over een kortere periode snel ruizig wordt (één
 # grote order trekt het meteen scheef) — 12 maanden geeft een stabieler beeld.

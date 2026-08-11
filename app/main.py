@@ -30,6 +30,7 @@ _DASHBOARD_HTML = _TEMPLATE_PATH.read_text(encoding="utf-8")
 
 _cache: dict = {"data": None, "fetched_at": 0.0, "error": None}
 _detail_cache: dict[str, dict] = {}
+_inventory_cache: dict = {"data": None, "fetched_at": 0.0, "error": None}
 
 
 def check_auth(credentials: HTTPBasicCredentials = Depends(security)) -> None:
@@ -75,6 +76,35 @@ def api_kpis(refresh: bool = Query(False), _auth: None = Depends(check_auth)):
             raise HTTPException(status_code=502, detail=f"Kon geen data uit Odoo ophalen: {exc}")
         return data
     return _cache["data"]
+
+
+def _refresh_inventory_cache() -> dict:
+    data = kpis.build_inventory_payload()
+    _inventory_cache["data"] = data
+    _inventory_cache["fetched_at"] = time.time()
+    _inventory_cache["error"] = None
+    return data
+
+
+@app.get("/api/inventory")
+def api_inventory(refresh: bool = Query(False), _auth: None = Depends(check_auth)):
+    """Voorraadtab: eigen endpoint/cache, apart van /api/kpis — wordt pas opgehaald
+    zodra de gebruiker de 'Voorraad'-tab voor het eerst opent."""
+    age = time.time() - _inventory_cache["fetched_at"]
+    stale = _inventory_cache["data"] is None or age > config.CACHE_TTL_SECONDS
+    if refresh or stale:
+        try:
+            data = _refresh_inventory_cache()
+        except Exception as exc:
+            logger.exception("Kon voorraaddata niet ophalen uit Odoo")
+            _inventory_cache["error"] = str(exc)
+            if _inventory_cache["data"] is not None:
+                stale_payload = dict(_inventory_cache["data"])
+                stale_payload["stale_error"] = str(exc)
+                return JSONResponse(stale_payload)
+            raise HTTPException(status_code=502, detail=f"Kon geen voorraaddata uit Odoo ophalen: {exc}")
+        return data
+    return _inventory_cache["data"]
 
 
 @app.get("/api/details/{key}")

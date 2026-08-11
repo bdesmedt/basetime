@@ -379,3 +379,92 @@ def test_build_detail_payload_raises_key_error_for_unknown_section():
         assert False, "had een KeyError moeten opleveren"
     except KeyError:
         pass
+
+
+# --- Voorraad ----------------------------------------------------------------
+
+def test_stock_value_aggregates_quant_lines_per_product_and_sorts_by_value():
+    """Locator One is serienummer-getrackt in Odoo: één stock.quant-regel per stuk,
+    niet één regel per product — deze test simuleert precies dat patroon."""
+    client = FakeOdooClient()
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        assert model == "stock.quant"
+        assert ["location_id.usage", "=", "internal"] in domain
+        return [
+            {"product_id": [1, "HW-101 Locator One"], "quantity": 1, "value": 421.0},
+            {"product_id": [1, "HW-101 Locator One"], "quantity": 1, "value": 421.0},
+            {"product_id": [23, "AC-103 Charge/ reset cable"], "quantity": 38, "value": 1330.0},
+        ]
+
+    client.search_read = search_read
+    stock = kpis.fetch_stock_value(client, top_n=10)
+
+    assert stock["total"] == 2172.0
+    assert stock["by_product"][0]["name"] == "AC-103 Charge/ reset cable"  # hoogste waarde eerst
+    assert stock["by_product"][0]["value"] == 1330.0
+    locator_one = next(p for p in stock["by_product"] if p["name"] == "HW-101 Locator One")
+    assert locator_one["quantity"] == 2  # twee losse quant-regels samengevoegd
+    assert locator_one["value"] == 842.0
+
+
+def test_stock_value_detail_is_not_truncated_to_top_n():
+    client = FakeOdooClient()
+    client.search_read = lambda model, domain, fields, limit=0, order=None: [
+        {"product_id": [i, f"Product {i}"], "quantity": 1, "value": float(i)} for i in range(1, 15)
+    ]
+    detail = kpis.fetch_stock_value_detail(client)
+    assert len(detail) == 14
+    assert detail[0]["name"] == "Product 14"  # hoogste waarde eerst
+
+
+def test_stock_movements_classifies_supplier_in_and_customer_out_and_ignores_internal_transfer():
+    windows = kpis.complete_month_windows(1)
+    month_start, _ = windows[0]
+    client = FakeOdooClient()
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        assert model == "stock.move.line"
+        assert ["state", "=", "done"] in domain
+        base = f"{month_start.isoformat()} 09:00:00"
+        return [
+            # ontvangst van leverancier
+            {"date": base, "quantity": 10.0, "product_id": [1, "Product A"],
+             "location_usage": "supplier", "location_dest_usage": "internal"},
+            # levering aan klant
+            {"date": base, "quantity": 3.0, "product_id": [1, "Product A"],
+             "location_usage": "internal", "location_dest_usage": "customer"},
+            # interne overboeking tussen twee eigen magazijnlocaties — telt niet mee
+            {"date": base, "quantity": 5.0, "product_id": [1, "Product A"],
+             "location_usage": "internal", "location_dest_usage": "internal"},
+        ]
+
+    client.search_read = search_read
+    movements = kpis.fetch_stock_movements(client, windows)
+
+    assert movements["in"] == [10.0]
+    assert movements["out"] == [3.0]
+
+
+def test_stock_movement_detail_returns_only_in_and_out_sorted_by_date_desc():
+    windows = kpis.complete_month_windows(2)
+    prev_month_start, _ = windows[0]
+    month_start, _ = windows[1]
+    client = FakeOdooClient()
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        return [
+            {"date": f"{prev_month_start.isoformat()} 09:00:00", "quantity": 10.0, "product_id": [1, "Product A"],
+             "location_usage": "supplier", "location_dest_usage": "internal"},
+            {"date": f"{month_start.isoformat()} 15:00:00", "quantity": 3.0, "product_id": [1, "Product A"],
+             "location_usage": "internal", "location_dest_usage": "customer"},
+            {"date": f"{month_start.isoformat()} 12:00:00", "quantity": 5.0, "product_id": [1, "Product A"],
+             "location_usage": "internal", "location_dest_usage": "internal"},
+        ]
+
+    client.search_read = search_read
+    detail = kpis.fetch_stock_movement_detail(client, windows)
+
+    assert len(detail) == 2  # de interne overboeking is uitgesloten
+    assert detail[0]["direction"] == "Geleverd"  # latere maand eerst (nieuwste eerst)
+    assert detail[1]["direction"] == "Ontvangen"
