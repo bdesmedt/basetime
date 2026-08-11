@@ -94,6 +94,7 @@
   .flag.gap { background: var(--status-serious); color: #1a1a19; }
   .flag.crit { background: var(--status-critical); color: #ffffff; }
   .flag.ok { background: var(--status-good); color: #ffffff; }
+  .flag.bad { background: var(--status-critical); color: #ffffff; }
 
   .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 4px; }
   @media (max-width: 900px) { .charts { grid-template-columns: 1fr; } }
@@ -129,6 +130,24 @@
 
   #tooltip { position: fixed; pointer-events: none; z-index: 50; display: none; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; color: var(--text-primary); box-shadow: 0 2px 10px rgba(0,0,0,0.15); white-space: nowrap; }
   #tooltip .tt-label { color: var(--text-muted); font-size: 10.5px; }
+
+  .detail-link { background: none; border: none; color: var(--series-1); font-size: 11.5px; font-weight: 600; cursor: pointer; padding: 0; margin-left: 8px; text-decoration: underline; }
+  .detail-link:hover { color: var(--text-primary); }
+  .heading-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 100; display: none; align-items: center; justify-content: center; padding: 24px; }
+  .modal-overlay.open { display: flex; }
+  .modal-panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; max-width: 900px; width: 100%; max-height: 82vh; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
+  .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 20px 12px; border-bottom: 1px solid var(--border); }
+  .modal-head h3 { margin: 0 0 3px; font-size: 15px; font-weight: 650; color: var(--text-primary); }
+  .modal-head p { margin: 0; font-size: 12px; color: var(--text-muted); }
+  .modal-close { background: none; border: 1px solid var(--border); color: var(--text-secondary); border-radius: 6px; font-size: 13px; padding: 4px 10px; cursor: pointer; flex-shrink: 0; }
+  .modal-close:hover { color: var(--text-primary); }
+  .modal-search { padding: 10px 20px; border-bottom: 1px solid var(--border); }
+  .modal-search input { width: 100%; box-sizing: border-box; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--page-plane); color: var(--text-primary); font-size: 13px; }
+  .modal-body { overflow-y: auto; padding: 4px 20px 18px; }
+  .modal-body table.data-table th { position: sticky; top: 0; background: var(--surface-1); }
+  .modal-state { padding: 30px 0; text-align: center; color: var(--text-muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -195,6 +214,45 @@
       </div>
     </div>
 
+    <h2 class="section">Cash conversion &amp; klantrisico</h2>
+    <p class="section-note">Ouderdomsanalyse van openstaande posten (op vervaldatum), klantconcentratie in de gefactureerde omzet, en de omzet die maandelijks nodig is om break-even te draaien.</p>
+    <div class="tiles" id="tiles-risk"></div>
+    <div class="charts" style="margin-top:12px;">
+      <div class="chart-card">
+        <h3>Ouderdom debiteuren &amp; crediteuren</h3>
+        <p class="chart-sub" id="sub-aging"></p>
+        <div class="legend">
+          <span class="key"><span class="swatch" style="background:var(--series-1)"></span>Debiteuren (te ontvangen)</span>
+          <span class="key"><span class="swatch" style="background:var(--series-2)"></span>Crediteuren (te betalen)</span>
+        </div>
+        <svg id="chart-aging" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+      <div class="chart-card">
+        <div class="heading-row">
+          <h3 id="top-debtors-heading">Grootste openstaande debiteuren</h3>
+          <button class="detail-link" onclick="openDetailModal('aging')">Bekijk alle openstaande posten →</button>
+        </div>
+        <p class="chart-sub">Op basis van niet-verrekende factuurregels, nu</p>
+        <table class="data-table" id="debtors-table">
+          <thead><tr><th>Klant</th><th>Openstaand (€)</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="charts">
+      <div class="chart-card" style="grid-column: 1 / -1;">
+        <div class="heading-row">
+          <h3 id="top-customers-heading">Grootste klanten naar gefactureerde omzet</h3>
+          <button class="detail-link" onclick="openDetailModal('customer_concentration')">Bekijk alle klanten →</button>
+        </div>
+        <p class="chart-sub" id="sub-customer-concentration"></p>
+        <table class="data-table" id="customers-table">
+          <thead><tr><th>Klant</th><th>Omzet (€)</th><th>Aandeel</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
     <h2 class="section">Gewogen pipeline per fase</h2>
     <p class="section-note" id="note-pipeline"></p>
     <div class="charts">
@@ -203,7 +261,10 @@
       </div>
     </div>
 
-    <h2 class="section" id="top-deals-heading">Top kansen naar gewogen waarde</h2>
+    <div class="heading-row">
+      <h2 class="section" id="top-deals-heading" style="margin-bottom:0;">Top kansen naar gewogen waarde</h2>
+      <button class="detail-link" onclick="openDetailModal('pipeline')">Bekijk alle open kansen →</button>
+    </div>
     <div class="chart-card">
       <table class="data-table" id="pipeline-table">
         <thead><tr><th>Kans</th><th>Fase</th><th>Kans %</th><th>Nominaal (€)</th><th>Gewogen (€)</th></tr></thead>
@@ -211,20 +272,46 @@
       </table>
     </div>
 
+    <div class="heading-row" style="margin-top:32px;">
+      <h2 class="section" style="margin:0;">Inkoopbacklog</h2>
+      <button class="detail-link" onclick="openDetailModal('purchase_backlog')">Bekijk alle open inkooporders →</button>
+    </div>
+
     <h2 class="section">Aandachtspunten</h2>
     <div class="notes">
       <ul>
-        <li><b>Runway</b> is een vereenvoudigde indicator: (beschikbare cash − kredietlimiet) ÷ vaste maandlasten. Voor een volledig scenariomodel met inkoopplanning en debiteuren/crediteurentiming is aanvullende analyse nodig — dit cijfer is een signaal, geen vervanging daarvoor.</li>
+        <li><b>Runway</b> is een vereenvoudigde indicator: (banksaldo + kredietruimte) ÷ vaste maandlasten. De kredietlimiet is geen vast bedrag in Odoo — pas 'm aan bij de tegel "Kredietlimiet" om liquiditeit en runway direct te herberekenen. Voor een volledig scenariomodel met inkoopplanning en debiteuren/crediteurentiming is aanvullende analyse nodig — dit cijfer is een signaal, geen vervanging daarvoor.</li>
         <li><b>Netto cashburn</b> kan van maand tot maand sterk wisselen door incidentele inkoopbetalingen en klantontvangsten. De vaste maandlasten zijn een stabielere indicator voor structurele burn dan de ruwe bankmutatie.</li>
         <li><b>Recurring/subscription-omzet</b> toont geboekte omzet op de subscription-rekeningen — dat is herkende omzet, geen vooruitontvangen/deferred-revenue-saldo. Voor een echte deferred-revenue-KPI is verbruiksregistratie per klant nodig.</li>
         <li><b>Inkoopbacklog</b> is een ruw totaal van alle niet-volledig-gefactureerde inkooporders; verouderde of foutieve openstaande orders zijn hier niet gefilterd.</li>
         <li id="note-concentration"><b>Gewogen pipeline</b> kan sterk leunen op een klein aantal grote deals — zie de tabel met topkansen voor de concentratie.</li>
         <li><b>Brutomarge</b> is niet gecorrigeerd voor eventuele boekingsfouten (verkeerde omzetrekening, niet-geboekte kosteloze leveringen, etc.) — controleer bij afwijkingen altijd de onderliggende boekingen.</li>
+        <li><b>Ouderdomsanalyse debiteuren/crediteuren</b> gebruikt de vervaldatum van elke boekingsregel; ontbreekt die, dan valt de regel terug op de boekingsdatum (bucket "Onbekende vervaldatum"). Verrekende/betaalde posten zijn uitgesloten.</li>
+        <li><b>Klantconcentratie</b> kijkt naar gefactureerde omzet (credit notes zijn verrekend), niet naar de gewogen pipeline. De pipeline-concentratie zelf (top klanten in de pijplijn) staat als los cijfer in de API-data (<code>pipeline.top_customer_share_pct</code>) en is nog niet als apart onderdeel op dit dashboard gezet.</li>
+        <li><b>Break-evenomzet</b> gebruikt de blended brutomarge over de getoonde periode en de vaste maandlasten — het houdt geen rekening met eenmalige kosten, seizoenspatronen, of een wijzigende productmix.</li>
       </ul>
     </div>
   </div>
 
   <footer>Basetime B.V. · basetimebv.odoo.com · KPI-dashboard</footer>
+</div>
+
+<div class="modal-overlay" id="detail-modal" onclick="if(event.target===this) closeDetailModal()">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <div>
+        <h3 id="detail-modal-title">Details</h3>
+        <p id="detail-modal-sub"></p>
+      </div>
+      <button class="modal-close" onclick="closeDetailModal()">Sluiten ✕</button>
+    </div>
+    <div class="modal-search">
+      <input type="text" id="detail-modal-search" placeholder="Zoeken op naam…" oninput="filterDetailModal()">
+    </div>
+    <div class="modal-body" id="detail-modal-body">
+      <div class="modal-state">Laden…</div>
+    </div>
+  </div>
 </div>
 </div>
 
@@ -437,7 +524,31 @@ function drawHBar(svgId, data){
   svg.parentElement.appendChild(legend);
 }
 
+let currentPayload = null;
+
+function updateLiquidityTiles(){
+  if (!currentPayload) return;
+  const input = document.getElementById('credit-limit-input');
+  const parsed = parseFloat(input.value);
+  const creditLimit = isNaN(parsed) ? currentPayload.cash.credit_limit : parsed;
+  const bankBalance = currentPayload.cash.available_now;
+  const headroom = bankBalance - creditLimit;
+
+  document.getElementById('liquidity-value').textContent = fmtEUR0.format(headroom);
+  document.getElementById('liquidity-sub').textContent = 'banksaldo ' + fmtEUR0.format(bankBalance) + ' + kredietruimte tot ' + fmtEUR0.format(creditLimit);
+  const flagEl = document.getElementById('liquidity-flag');
+  flagEl.style.display = '';
+  flagEl.className = 'flag ' + (headroom < 0 ? 'crit' : 'ok');
+  flagEl.textContent = headroom < 0 ? 'over limiet' : 'binnen limiet';
+
+  const fixedCosts = currentPayload.runway.fixed_monthly_costs;
+  const runwayMonths = fixedCosts ? headroom / fixedCosts : 0;
+  const runwayWeeks = Math.round(runwayMonths * 4.345 * 10) / 10;
+  document.getElementById('runway-value').textContent = runwayWeeks + ' weken';
+}
+
 function render(payload){
+  currentPayload = payload;
   document.getElementById('skeleton').style.display = 'none';
   document.getElementById('app').style.display = 'block';
 
@@ -458,14 +569,45 @@ function render(payload){
   const tilesBottom = document.getElementById('tiles-bottom');
   tilesTop.innerHTML = ''; tilesBottom.innerHTML = '';
 
-  const headroomFlag = payload.cash.credit_headroom < 0
-    ? {cls:'crit', text:'over de limiet'}
-    : {cls:'ok', text:'binnen kredietlimiet'};
+  // Beschikbare liquiditeit = banksaldo + nog beschikbare kredietruimte. Dát is het
+  // bedrag dat je feitelijk kunt uitgeven, niet het kale banksaldo (zie hieronder).
+  const liqTile = document.createElement('div');
+  liqTile.className = 'tile';
+  liqTile.innerHTML = `
+    <span class="flag" id="liquidity-flag"></span>
+    <p class="label">Beschikbare liquiditeit</p>
+    <div class="value" id="liquidity-value">–</div>
+    <p class="sub" id="liquidity-sub"></p>
+  `;
+  tilesTop.appendChild(liqTile);
 
-  tilesTop.appendChild(tile('Beschikbare cash', fmtEUR0.format(payload.cash.available_now), 'som van de bankrekeningen, nu', null, null, null, headroomFlag));
-  tilesTop.appendChild(tile('Resterende kredietruimte', fmtEUR0.format(payload.cash.credit_headroom), 'tot kredietlimiet van ' + fmtEUR0.format(payload.cash.credit_limit)));
-  tilesTop.appendChild(tile('Runway (indicatie)', payload.runway.weeks + ' weken', 'kredietruimte ÷ vaste maandlasten — vereenvoudigd', null, null, null, {cls:'warn', text:'vereenvoudigd'}));
+  // Kredietlimiet is GEEN vast bedrag in Odoo (het is een aanname in config/env) —
+  // daarom hier aanpasbaar, zodat liquiditeit en runway direct herberekenen.
+  const limitTile = document.createElement('div');
+  limitTile.className = 'tile';
+  limitTile.innerHTML = `
+    <p class="label">Kredietlimiet</p>
+    <div class="value"><input type="number" id="credit-limit-input" step="1000"
+      style="width:100%;font-size:22px;font-weight:650;background:transparent;border:none;color:var(--text-primary);padding:0;font-family:inherit;"
+      value="${payload.cash.credit_limit}"></div>
+    <p class="sub">geen vast bedrag in Odoo — pas hier aan om te herberekenen</p>
+  `;
+  tilesTop.appendChild(limitTile);
+
+  const runwayTile = document.createElement('div');
+  runwayTile.className = 'tile';
+  runwayTile.innerHTML = `
+    <span class="flag warn">vereenvoudigd</span>
+    <p class="label">Runway (indicatie)</p>
+    <div class="value" id="runway-value">–</div>
+    <p class="sub">liquiditeit ÷ vaste maandlasten</p>
+  `;
+  tilesTop.appendChild(runwayTile);
+
   tilesTop.appendChild(tile('Netto cashburn (structureel)', fmtEUR0.format(payload.runway.fixed_monthly_costs) + ' / mnd', 'vaste maandlasten; werkelijke bankmutatie gem. ' + fmtEUR0.format(payload.cashflow_avg) + '/mnd', null, payload.cashflow, css('--series-8')));
+
+  document.getElementById('credit-limit-input').addEventListener('input', updateLiquidityTiles);
+  updateLiquidityTiles();
 
   const lastIdx = payload.margin_pct.length - 1;
   const lastMonthLabel = labels.length ? labels[labels.length-1] : '';
@@ -477,6 +619,57 @@ function render(payload){
   const topShare = topDeal && payload.pipeline.weighted_total ? Math.round(topDeal.weighted/payload.pipeline.weighted_total*100) : 0;
   tilesBottom.appendChild(tile('Gewogen pipeline', fmtEUR0.format(payload.pipeline.weighted_total), payload.pipeline.opportunity_count + ' open kansen, nominaal ' + fmtEUR0.format(payload.pipeline.nominal_total), null, null, null, topShare>=20?{cls:'gap',text:'geconcentreerd'}:null));
   tilesBottom.appendChild(tile('Inkoopbacklog', fmtEUR0.format(payload.purchase_backlog.total), payload.purchase_backlog.order_count + ' open orders, waarvan ' + fmtEUR0.format(payload.purchase_backlog.future_years) + ' in latere jaren'));
+
+  // --- Cash conversion & klantrisico -------------------------------------
+  const tilesRisk = document.getElementById('tiles-risk');
+  tilesRisk.innerHTML = '';
+
+  const ar = payload.aging.receivables, ap = payload.aging.payables;
+  const arOld = ar.buckets.find(b => b.label === '90+ dagen');
+  const arOldShare = arOld && ar.total ? arOld.amount / ar.total * 100 : 0;
+  tilesRisk.appendChild(tile('Openstaande debiteuren', fmtEUR0.format(ar.total), (ar.top_partners[0] ? 'grootste: ' + ar.top_partners[0].name : 'geen openstaande posten'), null, null, null, arOldShare >= 15 ? {cls:'crit', text:'>90 dagen'} : null));
+  tilesRisk.appendChild(tile('Openstaande crediteuren', fmtEUR0.format(ap.total), (ap.top_partners[0] ? 'grootste: ' + ap.top_partners[0].name : 'geen openstaande posten')));
+
+  const cc = payload.customer_concentration;
+  tilesRisk.appendChild(tile('Klantconcentratie', fmtPct(cc.top_n_share_pct), 'top ' + cc.top_customers.length + ' klanten, ' + cc.window_label, null, null, null, cc.top_n_share_pct >= 40 ? {cls:'gap', text:'geconcentreerd'} : null));
+
+  const be = payload.break_even;
+  if (be.monthly_revenue_needed !== null && be.monthly_revenue_needed !== undefined){
+    const covered = be.gap_to_latest_month <= 0;
+    tilesRisk.appendChild(tile('Break-evenomzet', fmtEUR0.format(be.monthly_revenue_needed) + ' / mnd', 'bij ' + fmtPct(be.based_on_margin_pct) + ' brutomarge over ' + payload.window.label_text,
+      null, null, null,
+      {cls: covered ? 'ok' : 'bad', text: (covered ? 'gehaald' : fmtEUR0.format(be.gap_to_latest_month) + ' tekort')}));
+  } else {
+    tilesRisk.appendChild(tile('Break-evenomzet', 'n.v.t.', 'brutomarge over ' + payload.window.label_text + ' is nul of negatief — geen break-evenpunt te berekenen'));
+  }
+
+  document.getElementById('sub-aging').textContent = 'Debiteuren ' + fmtEUR0.format(ar.total) + ' · Crediteuren ' + fmtEUR0.format(ap.total);
+  // buckets die op alle twee de kanten nul zijn (meestal "Onbekend") laten we weg,
+  // anders raakt de laatste as-label overvol op een chart met maar 520px breedte
+  const agingIdx = ar.buckets.map((b,i)=> (b.amount || ap.buckets[i].amount) ? i : -1).filter(i=>i>=0);
+  const agingLabels = agingIdx.map(i => ar.buckets[i].label);
+  const agingAr = agingIdx.map(i => ar.buckets[i].amount);
+  const agingAp = agingIdx.map(i => ap.buckets[i].amount);
+  drawGroupedBar('chart-aging', agingLabels, agingAr, agingAp, css('--series-1'), css('--series-2'), (v)=>fmtEUR0.format(v));
+
+  document.getElementById('top-debtors-heading').textContent = 'Grootste openstaande debiteuren (top ' + ar.top_partners.length + ')';
+  const debtorsBody = document.querySelector('#debtors-table tbody');
+  debtorsBody.innerHTML = '';
+  ar.top_partners.forEach(p=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">${p.name}</td><td>${fmtEUR0.format(p.amount)}</td>`;
+    debtorsBody.appendChild(tr);
+  });
+
+  document.getElementById('top-customers-heading').textContent = 'Grootste klanten naar gefactureerde omzet (top ' + cc.top_customers.length + ')';
+  document.getElementById('sub-customer-concentration').textContent = 'Totale gefactureerde omzet ' + cc.window_label + ': ' + fmtEUR0.format(cc.total_revenue);
+  const customersBody = document.querySelector('#customers-table tbody');
+  customersBody.innerHTML = '';
+  cc.top_customers.forEach(c=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">${c.name}</td><td>${fmtEUR0.format(c.amount)}</td><td>${fmtPct(c.share_pct)}</td>`;
+    customersBody.appendChild(tr);
+  });
 
   document.getElementById('note-revcogs').textContent = 'Netto-omzet en kostprijs uit geboekte grootboekmutaties (rekeningtype income / expense_direct_cost), over ' + payload.window.label_text + '. De lopende maand is weggelaten omdat die nooit compleet is.';
   document.getElementById('sub-revcogs').textContent = 'Per maand (€)';
@@ -503,6 +696,134 @@ function render(payload){
     tbody.appendChild(tr);
   });
   document.getElementById('top-deals-heading').textContent = 'Top ' + payload.pipeline.top_deals.length + ' kansen naar gewogen waarde';
+}
+
+// --- Doorklik-detailschermen (modal met de volledige, niet-ingekorte lijst) ------
+let detailCache = {};
+let detailState = { key: null, rawData: null };
+
+const DETAIL_TITLES = {
+  aging: 'Alle openstaande posten (debiteuren & crediteuren)',
+  pipeline: 'Alle open kansen in de pijplijn',
+  customer_concentration: 'Alle klanten naar gefactureerde omzet',
+  purchase_backlog: 'Alle open inkooporders',
+};
+
+async function openDetailModal(key){
+  detailState = { key, rawData: null };
+  document.getElementById('detail-modal-title').textContent = DETAIL_TITLES[key] || 'Details';
+  document.getElementById('detail-modal-sub').textContent = '';
+  document.getElementById('detail-modal-search').value = '';
+  document.getElementById('detail-modal-body').innerHTML = '<div class="modal-state">Cijfers ophalen uit Odoo…</div>';
+  document.getElementById('detail-modal').classList.add('open');
+
+  if (detailCache[key]){
+    detailState.rawData = detailCache[key];
+    renderDetailModal();
+    return;
+  }
+  try {
+    const resp = await fetch('/api/details/' + key);
+    if (!resp.ok){
+      const body = await resp.json().catch(()=>({detail: resp.statusText}));
+      throw new Error(body.detail || resp.statusText);
+    }
+    const data = await resp.json();
+    detailCache[key] = data;
+    detailState.rawData = data;
+    renderDetailModal();
+  } catch (err){
+    document.getElementById('detail-modal-body').innerHTML = '<div class="modal-state">Kon details niet ophalen: ' + err.message + '</div>';
+  }
+}
+
+function closeDetailModal(){
+  document.getElementById('detail-modal').classList.remove('open');
+}
+
+document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape') closeDetailModal(); });
+
+function filterDetailModal(){
+  renderDetailModal();
+}
+
+function detailTable(columns, rows){
+  if (!rows.length) return '<div class="modal-state">Geen regels.</div>';
+  let s = '<table class="data-table"><thead><tr>' + columns.map(c=>'<th>'+c.label+'</th>').join('') + '</tr></thead><tbody>';
+  rows.forEach(r=>{
+    s += '<tr>' + columns.map((c,i)=>'<td' + (i===0?' class="name"':'') + '>' + c.fmt(r) + '</td>').join('') + '</tr>';
+  });
+  s += '</tbody></table>';
+  return s;
+}
+
+function renderDetailModal(){
+  const key = detailState.key;
+  const data = detailState.rawData;
+  if (!data) return;
+  const q = document.getElementById('detail-modal-search').value.trim().toLowerCase();
+  const body = document.getElementById('detail-modal-body');
+
+  if (key === 'aging'){
+    const filt = (items) => q ? items.filter(i => i.partner.toLowerCase().includes(q)) : items;
+    const ar = filt(data.receivables), ap = filt(data.payables);
+    document.getElementById('detail-modal-sub').textContent = ar.length + ' debiteurenregels · ' + ap.length + ' crediteurenregels';
+    const cols = [
+      {label:'Klant', fmt:r=>r.partner},
+      {label:'Factuur', fmt:r=>r.invoice||'–'},
+      {label:'Vervaldatum', fmt:r=>r.due_date||'–'},
+      {label:'Dagen te laat', fmt:r=>r.days_overdue===null?'–':r.days_overdue},
+      {label:'Categorie', fmt:r=>r.bucket},
+      {label:'Bedrag (€)', fmt:r=>fmtEUR0.format(r.amount)},
+    ];
+    body.innerHTML =
+      '<h4 style="margin:10px 0 6px;font-size:12.5px;color:var(--text-primary);">Debiteuren (' + ar.length + ')</h4>' +
+      detailTable(cols, ar) +
+      '<h4 style="margin:20px 0 6px;font-size:12.5px;color:var(--text-primary);">Crediteuren (' + ap.length + ')</h4>' +
+      detailTable(cols, ap);
+    return;
+  }
+
+  if (key === 'pipeline'){
+    const rows = q ? data.filter(d => (d.name+d.customer).toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' open kansen';
+    const cols = [
+      {label:'Kans', fmt:r=>r.name},
+      {label:'Klant', fmt:r=>r.customer},
+      {label:'Fase', fmt:r=>r.stage},
+      {label:'Kans %', fmt:r=>fmtPct(r.probability)},
+      {label:'Nominaal (€)', fmt:r=>fmtEUR0.format(r.nominal)},
+      {label:'Gewogen (€)', fmt:r=>fmtEUR0.format(r.weighted)},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+
+  if (key === 'customer_concentration'){
+    const rows = q ? data.filter(d => d.name.toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' klanten';
+    const cols = [
+      {label:'Klant', fmt:r=>r.name},
+      {label:'Omzet (€)', fmt:r=>fmtEUR0.format(r.amount)},
+      {label:'Aandeel', fmt:r=>fmtPct(r.share_pct)},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+
+  if (key === 'purchase_backlog'){
+    const rows = q ? data.filter(d => (d.name+d.supplier).toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' open inkooporders';
+    const cols = [
+      {label:'PO', fmt:r=>r.name},
+      {label:'Leverancier', fmt:r=>r.supplier},
+      {label:'Bedrag (€)', fmt:r=>fmtEUR0.format(r.amount)},
+      {label:'Orderdatum', fmt:r=>r.order_date||'–'},
+      {label:'Verwachte datum', fmt:r=>r.planned_date||'–'},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
 }
 
 async function loadData(forceRefresh){

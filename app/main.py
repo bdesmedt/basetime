@@ -29,6 +29,7 @@ _TEMPLATE_PATH = Path(__file__).parent / "templates" / "dashboard.html"
 _DASHBOARD_HTML = _TEMPLATE_PATH.read_text(encoding="utf-8")
 
 _cache: dict = {"data": None, "fetched_at": 0.0, "error": None}
+_detail_cache: dict[str, dict] = {}
 
 
 def check_auth(credentials: HTTPBasicCredentials = Depends(security)) -> None:
@@ -74,6 +75,30 @@ def api_kpis(refresh: bool = Query(False), _auth: None = Depends(check_auth)):
             raise HTTPException(status_code=502, detail=f"Kon geen data uit Odoo ophalen: {exc}")
         return data
     return _cache["data"]
+
+
+@app.get("/api/details/{key}")
+def api_details(key: str, refresh: bool = Query(False), _auth: None = Depends(check_auth)):
+    """Volledige (niet-ingekorte) lijst voor de 'Bekijk alle' doorklik-knoppen op het
+    dashboard — zelfde cache-aanpak als /api/kpis, maar per sectie (key) apart."""
+    entry = _detail_cache.get(key, {"data": None, "fetched_at": 0.0})
+    age = time.time() - entry["fetched_at"]
+    stale = entry["data"] is None or age > config.CACHE_TTL_SECONDS
+    if refresh or stale:
+        try:
+            data = kpis.build_detail_payload(key)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Onbekende detail-sectie: {key}")
+        except Exception as exc:
+            logger.exception("Kon detaildata niet ophalen uit Odoo (%s)", key)
+            if entry["data"] is not None:
+                # geef de laatst bekende detaildata terug in plaats van een harde fout,
+                # zelfde aanpak als /api/kpis bij een tijdelijke Odoo-hik
+                return entry["data"]
+            raise HTTPException(status_code=502, detail=f"Kon geen detaildata ophalen: {exc}")
+        entry = {"data": data, "fetched_at": time.time()}
+        _detail_cache[key] = entry
+    return entry["data"]
 
 
 @app.get("/", response_class=HTMLResponse)

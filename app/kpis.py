@@ -24,6 +24,28 @@ DUTCH_MONTH_ABBR = {
     7: "jul", 8: "aug", 9: "sep", 10: "okt", 11: "nov", 12: "dec",
 }
 
+# Volgorde waarin de ouderdomscategorieën altijd worden teruggegeven (ook als een bucket
+# toevallig op nul staat) — zodat de grafiek voor debiteuren en crediteuren dezelfde
+# x-as-categorieën gebruikt en de balken netjes uitlijnen.
+AGING_BUCKET_ORDER = [
+    "Nog niet vervallen", "1-30 dagen", "31-60 dagen", "61-90 dagen", "90+ dagen",
+    "Onbekend",
+]
+
+
+def _aging_bucket_label(days_overdue: int | None) -> str:
+    if days_overdue is None:
+        return "Onbekend"
+    if days_overdue <= 0:
+        return "Nog niet vervallen"
+    if days_overdue <= 30:
+        return "1-30 dagen"
+    if days_overdue <= 60:
+        return "31-60 dagen"
+    if days_overdue <= 90:
+        return "61-90 dagen"
+    return "90+ dagen"
+
 
 def _add_months(d: date, n: int) -> date:
     m = d.month - 1 + n
@@ -189,7 +211,10 @@ def fetch_purchase_backlog(client: OdooClient) -> dict:
     }
 
 
-def fetch_pipeline(client: OdooClient, top_n: int) -> dict:
+def _fetch_pipeline_leads(client: OdooClient) -> list[dict]:
+    """Alle open CRM-kansen (excl. gesloten-won/gesloten-verloren) — gedeeld door de
+    samenvatting (fetch_pipeline) en het doorklik-detailscherm (fetch_pipeline_detail),
+    zodat beide exact dezelfde selectie gebruiken."""
     closed_stages = client.search_read(
         "crm.stage",
         ["|", ["name", "ilike", "closed won"], ["name", "ilike", "closed lost"]],
@@ -199,11 +224,18 @@ def fetch_pipeline(client: OdooClient, top_n: int) -> dict:
     domain: list[Any] = [["type", "=", "opportunity"], ["active", "=", True]]
     if excluded_ids:
         domain.append(["stage_id", "not in", excluded_ids])
-    leads = client.search_read(
-        "crm.lead", domain, ["name", "stage_id", "probability", "expected_revenue"]
+    return client.search_read(
+        "crm.lead",
+        domain,
+        ["name", "stage_id", "partner_id", "probability", "expected_revenue"],
     )
 
+
+def fetch_pipeline(client: OdooClient, top_n: int, top_customers_n: int) -> dict:
+    leads = _fetch_pipeline_leads(client)
+
     stage_summary: dict[str, dict] = {}
+    customer_summary: dict[str, dict] = {}
     deals = []
     total_nominal = 0.0
     total_weighted = 0.0
@@ -213,10 +245,17 @@ def fetch_pipeline(client: OdooClient, top_n: int) -> dict:
         weighted = prob / 100 * rev
         total_nominal += rev
         total_weighted += weighted
+
         stage_name = lead["stage_id"][1] if lead.get("stage_id") else "Onbekend"
         s = stage_summary.setdefault(stage_name, {"nominal": 0.0, "weighted": 0.0})
         s["nominal"] += rev
         s["weighted"] += weighted
+
+        customer_name = lead["partner_id"][1] if lead.get("partner_id") else "Niet gekoppeld aan klant"
+        c = customer_summary.setdefault(customer_name, {"nominal": 0.0, "weighted": 0.0})
+        c["nominal"] += rev
+        c["weighted"] += weighted
+
         deals.append(
             {
                 "name": lead["name"],
@@ -232,13 +271,259 @@ def fetch_pipeline(client: OdooClient, top_n: int) -> dict:
         {"stage": name, "nominal": round(v["nominal"], 2), "weighted": round(v["weighted"], 2)}
         for name, v in sorted(stage_summary.items(), key=lambda kv: -kv[1]["weighted"])
     ]
+    customers_out = [
+        {"name": name, "nominal": round(v["nominal"], 2), "weighted": round(v["weighted"], 2)}
+        for name, v in sorted(customer_summary.items(), key=lambda kv: -kv[1]["weighted"])
+    ][:top_customers_n]
+    top_customer_share_pct = (
+        round(sum(c["weighted"] for c in customers_out) / total_weighted * 100, 1)
+        if total_weighted
+        else 0.0
+    )
+
     return {
         "opportunity_count": len(leads),
         "nominal_total": round(total_nominal, 2),
         "weighted_total": round(total_weighted, 2),
         "by_stage": stages_out,
         "top_deals": deals[:top_n],
+        "by_customer": customers_out,
+        "top_customer_share_pct": top_customer_share_pct,
     }
+
+
+def fetch_ar_ap_aging(client: OdooClient, top_n: int) -> dict:
+    """Ouderdomsanalyse van openstaande (nog niet volledig betaalde) debiteuren- en
+    crediteurenposten, gebaseerd op de vervaldatum (`date_maturity`) van elke boekingsregel
+    — valt terug op de boekingsdatum als er geen vervaldatum is vastgelegd."""
+    today = date.today()
+
+    def _fetch_side(account_type: str, sign: float) -> dict:
+        rows = client.search_read(
+            "account.move.line",
+            [
+                ["account_id.account_type", "=", account_type],
+                ["parent_state", "=", "posted"],
+                ["reconciled", "=", False],
+            ],
+            ["partner_id", "date_maturity", "date", "amount_residual"],
+        )
+        buckets: dict[str, float] = {label: 0.0 for label in AGING_BUCKET_ORDER}
+        by_partner: dict[str, float] = {}
+        total = 0.0
+        for row in rows:
+            amount = sign * (row.get("amount_residual") or 0)
+            if not amount:
+                continue
+            due_str = row.get("date_maturity") or row.get("date")
+            days_overdue = None
+            if due_str:
+                due_date = datetime.strptime(due_str[:10], "%Y-%m-%d").date()
+                days_overdue = (today - due_date).days
+            label = _aging_bucket_label(days_overdue)
+            buckets[label] += amount
+            total += amount
+            partner_name = row["partner_id"][1] if row.get("partner_id") else "Onbekend"
+            by_partner[partner_name] = by_partner.get(partner_name, 0.0) + amount
+
+        top_partners = sorted(by_partner.items(), key=lambda kv: -kv[1])[:top_n]
+        return {
+            "total": round(total, 2),
+            "buckets": [
+                {"label": label, "amount": round(buckets[label], 2)}
+                for label in AGING_BUCKET_ORDER
+            ],
+            "top_partners": [
+                {"name": name, "amount": round(amount, 2)} for name, amount in top_partners
+            ],
+        }
+
+    return {
+        "receivables": _fetch_side("asset_receivable", 1.0),
+        "payables": _fetch_side("liability_payable", -1.0),
+    }
+
+
+def fetch_customer_revenue_concentration(client: OdooClient, months: int, top_n: int) -> dict:
+    """Aandeel van de grootste klanten in de gefactureerde omzet over de laatste `months`
+    volledige maanden — een hoog aandeel betekent een kwetsbare afhankelijkheid van een
+    klein aantal klanten."""
+    windows = complete_month_windows(months)
+    start, end = windows[0][0], windows[-1][1]
+    rows = client.read_group(
+        "account.move",
+        [
+            ["move_type", "in", ["out_invoice", "out_refund"]],
+            ["state", "=", "posted"],
+            ["invoice_date", ">=", _iso(start)],
+            ["invoice_date", "<", _iso(end)],
+        ],
+        ["amount_untaxed_signed"],
+        ["partner_id"],
+    )
+    total = sum(r.get("amount_untaxed_signed") or 0 for r in rows)
+    ranked = sorted(rows, key=lambda r: -(r.get("amount_untaxed_signed") or 0))
+    top = ranked[:top_n]
+    top_sum = sum(r.get("amount_untaxed_signed") or 0 for r in top)
+    return {
+        "window_label": f"laatste {months} volledige maanden",
+        "total_revenue": round(total, 2),
+        "top_customers": [
+            {
+                "name": r["partner_id"][1] if r.get("partner_id") else "Onbekend",
+                "amount": round(r.get("amount_untaxed_signed") or 0, 2),
+                "share_pct": (
+                    round((r.get("amount_untaxed_signed") or 0) / total * 100, 1)
+                    if total
+                    else 0.0
+                ),
+            }
+            for r in top
+        ],
+        "top_n_share_pct": round(top_sum / total * 100, 1) if total else 0.0,
+    }
+
+
+# --- Doorklik-detailschermen: volledige (niet-ingekorte) lijsten -----------
+# Deze functies leveren de data voor de "Bekijk alle" doorklik-knoppen op het
+# dashboard. Ze gebruiken zoveel mogelijk dezelfde domeinen/selecties als de
+# samenvattingsfuncties hierboven, maar knippen niet af op top-N.
+
+def fetch_ar_ap_aging_detail(client: OdooClient) -> dict:
+    """Elke losse openstaande boekingsregel (niet alleen de top-partners), voor het
+    doorklikscherm bij de ouderdomsanalyse."""
+    today = date.today()
+
+    def _fetch_side(account_type: str, sign: float) -> list[dict]:
+        rows = client.search_read(
+            "account.move.line",
+            [
+                ["account_id.account_type", "=", account_type],
+                ["parent_state", "=", "posted"],
+                ["reconciled", "=", False],
+            ],
+            ["partner_id", "move_id", "date_maturity", "date", "amount_residual"],
+        )
+        items = []
+        for row in rows:
+            amount = sign * (row.get("amount_residual") or 0)
+            if not amount:
+                continue
+            due_str = row.get("date_maturity") or row.get("date")
+            days_overdue = None
+            if due_str:
+                due_date = datetime.strptime(due_str[:10], "%Y-%m-%d").date()
+                days_overdue = (today - due_date).days
+            items.append(
+                {
+                    "partner": row["partner_id"][1] if row.get("partner_id") else "Onbekend",
+                    "invoice": row["move_id"][1] if row.get("move_id") else "",
+                    "due_date": due_str,
+                    "days_overdue": days_overdue,
+                    "bucket": _aging_bucket_label(days_overdue),
+                    "amount": round(amount, 2),
+                }
+            )
+        items.sort(key=lambda i: -(i["days_overdue"] if i["days_overdue"] is not None else -999999))
+        return items
+
+    return {
+        "receivables": _fetch_side("asset_receivable", 1.0),
+        "payables": _fetch_side("liability_payable", -1.0),
+    }
+
+
+def fetch_pipeline_detail(client: OdooClient) -> list[dict]:
+    """Alle open kansen (niet alleen de top-N), inclusief klantnaam, voor het
+    doorklikscherm bij de pijplijn."""
+    leads = _fetch_pipeline_leads(client)
+    deals = []
+    for lead in leads:
+        prob = lead.get("probability") or 0
+        rev = lead.get("expected_revenue") or 0
+        weighted = prob / 100 * rev
+        deals.append(
+            {
+                "name": lead["name"],
+                "customer": lead["partner_id"][1] if lead.get("partner_id") else "Niet gekoppeld aan klant",
+                "stage": lead["stage_id"][1] if lead.get("stage_id") else "Onbekend",
+                "probability": round(prob, 2),
+                "nominal": round(rev, 2),
+                "weighted": round(weighted, 2),
+            }
+        )
+    deals.sort(key=lambda d: -d["weighted"])
+    return deals
+
+
+def fetch_customer_concentration_detail(client: OdooClient, months: int) -> list[dict]:
+    """Alle klanten (niet alleen de top-N) met hun gefactureerde omzet over de laatste
+    `months` volledige maanden, voor het doorklikscherm bij klantconcentratie."""
+    windows = complete_month_windows(months)
+    start, end = windows[0][0], windows[-1][1]
+    rows = client.read_group(
+        "account.move",
+        [
+            ["move_type", "in", ["out_invoice", "out_refund"]],
+            ["state", "=", "posted"],
+            ["invoice_date", ">=", _iso(start)],
+            ["invoice_date", "<", _iso(end)],
+        ],
+        ["amount_untaxed_signed"],
+        ["partner_id"],
+    )
+    total = sum(r.get("amount_untaxed_signed") or 0 for r in rows)
+    ranked = sorted(rows, key=lambda r: -(r.get("amount_untaxed_signed") or 0))
+    return [
+        {
+            "name": r["partner_id"][1] if r.get("partner_id") else "Onbekend",
+            "amount": round(r.get("amount_untaxed_signed") or 0, 2),
+            "share_pct": (
+                round((r.get("amount_untaxed_signed") or 0) / total * 100, 1) if total else 0.0
+            ),
+        }
+        for r in ranked
+    ]
+
+
+def fetch_purchase_backlog_detail(client: OdooClient) -> list[dict]:
+    """Elke losse openstaande inkooporder (niet alleen het totaal), voor het
+    doorklikscherm bij de inkoopbacklog."""
+    rows = client.search_read(
+        "purchase.order",
+        [["state", "in", ["purchase", "done"]], ["invoice_status", "!=", "invoiced"]],
+        ["name", "partner_id", "amount_total", "date_order", "date_planned"],
+    )
+    rows.sort(key=lambda r: -(r.get("amount_total") or 0))
+    return [
+        {
+            "name": r.get("name") or "",
+            "supplier": r["partner_id"][1] if r.get("partner_id") else "Onbekend",
+            "amount": round(r.get("amount_total") or 0, 2),
+            "order_date": (r.get("date_order") or "")[:10] or None,
+            "planned_date": (r.get("date_planned") or "")[:10] or None,
+        }
+        for r in rows
+    ]
+
+
+DETAIL_FETCHERS = {
+    "aging": lambda client: fetch_ar_ap_aging_detail(client),
+    "pipeline": lambda client: fetch_pipeline_detail(client),
+    "customer_concentration": lambda client: fetch_customer_concentration_detail(
+        client, config.CONCENTRATION_MONTHS_LOOKBACK
+    ),
+    "purchase_backlog": lambda client: fetch_purchase_backlog_detail(client),
+}
+
+
+def build_detail_payload(key: str) -> Any:
+    """Volledige (niet-ingekorte) lijst voor het doorklik-detailscherm bij een KPI-sectie.
+    Raist KeyError als `key` geen bekende sectie is (main.py zet dat om in een 404)."""
+    if key not in DETAIL_FETCHERS:
+        raise KeyError(key)
+    client = get_client()
+    return DETAIL_FETCHERS[key](client)
 
 
 # --- Samenstellen van de complete dashboard-payload -------------------------
@@ -257,7 +542,11 @@ def build_dashboard_payload() -> dict:
     cashflow = fetch_cashflow(client, windows)
     bank_now = fetch_bank_balance_now(client)
     backlog = fetch_purchase_backlog(client)
-    pipeline = fetch_pipeline(client, config.TOP_PIPELINE_DEALS)
+    pipeline = fetch_pipeline(client, config.TOP_PIPELINE_DEALS, config.TOP_CUSTOMERS_N)
+    aging = fetch_ar_ap_aging(client, config.TOP_CUSTOMERS_N)
+    customer_concentration = fetch_customer_revenue_concentration(
+        client, config.CONCENTRATION_MONTHS_LOOKBACK, config.TOP_CUSTOMERS_N
+    )
 
     credit_headroom = round(bank_now - config.CREDIT_LIMIT, 2)
     runway_months = credit_headroom / config.FIXED_MONTHLY_COSTS if config.FIXED_MONTHLY_COSTS else 0
@@ -265,6 +554,21 @@ def build_dashboard_payload() -> dict:
 
     avg_cashflow = round(sum(cashflow) / len(cashflow), 2) if cashflow else 0
     avg_recurring = round(sum(recurring) / len(recurring), 2) if recurring else 0
+
+    # Break-evenomzet: bij de gemiddelde brutomarge over de getoonde periode, hoeveel omzet
+    # is per maand nodig om de vaste maandlasten te dekken? Gebruikt de SOM van omzet/kostprijs
+    # over de hele periode (niet het gemiddelde van de losse maandpercentages), zodat één
+    # rare maand de uitkomst niet onevenredig laat schommelen.
+    total_revenue = sum(revenue)
+    total_cogs = sum(cogs)
+    blended_margin_fraction = (total_revenue - total_cogs) / total_revenue if total_revenue else 0.0
+    if blended_margin_fraction > 0:
+        break_even_revenue = round(config.FIXED_MONTHLY_COSTS / blended_margin_fraction, 2)
+        latest_revenue = revenue[-1] if revenue else 0.0
+        gap_to_latest_month = round(break_even_revenue - latest_revenue, 2)
+    else:
+        break_even_revenue = None
+        gap_to_latest_month = None
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -294,4 +598,12 @@ def build_dashboard_payload() -> dict:
         "cashflow_avg": avg_cashflow,
         "purchase_backlog": backlog,
         "pipeline": pipeline,
+        "aging": aging,
+        "customer_concentration": customer_concentration,
+        "break_even": {
+            "monthly_revenue_needed": break_even_revenue,
+            "based_on_margin_pct": round(blended_margin_fraction * 100, 1),
+            "latest_month_revenue": revenue[-1] if revenue else 0.0,
+            "gap_to_latest_month": gap_to_latest_month,
+        },
     }

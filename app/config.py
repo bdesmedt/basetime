@@ -62,6 +62,15 @@ MONTHS_LOOKBACK = int(_get_env("MONTHS_LOOKBACK", "7"))
 # Aantal pipeline-deals dat in de "top kansen"-tabel komt.
 TOP_PIPELINE_DEALS = int(_get_env("TOP_PIPELINE_DEALS", "10"))
 
+# Aantal klanten dat in de "top klanten"-tabellen komt (omzetconcentratie en
+# pipeline-concentratie).
+TOP_CUSTOMERS_N = int(_get_env("TOP_CUSTOMERS_N", "5"))
+
+# Aantal maanden dat wordt meegenomen voor de klantconcentratie-KPI. Losstaand van
+# MONTHS_LOOKBACK omdat concentratie over een kortere periode snel ruizig wordt (één
+# grote order trekt het meteen scheef) — 12 maanden geeft een stabieler beeld.
+CONCENTRATION_MONTHS_LOOKBACK = int(_get_env("CONCENTRATION_MONTHS_LOOKBACK", "12"))
+
 # --- Bedrijfsspecifieke constanten (Basetime B.V.) --------------------------
 # Rekeningcodes van de liquide-middelenrekeningen die samen "beschikbare cash" vormen.
 # Gevonden via Odoo (account.account, account_type = asset_cash): Rabobank (103006),

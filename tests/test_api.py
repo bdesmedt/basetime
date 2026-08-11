@@ -129,3 +129,67 @@ def test_api_kpis_returns_502_when_no_cache_and_odoo_fails(monkeypatch):
     client = TestClient(main.app)
     resp = client.get("/api/kpis", headers=_auth_header("testuser", "testpass"))
     assert resp.status_code == 502
+
+
+# --- /api/details/{key} — doorklik-detailschermen ---------------------------
+
+def test_api_details_requires_auth():
+    client = TestClient(main.app)
+    resp = client.get("/api/details/pipeline")
+    assert resp.status_code == 401
+
+
+def test_api_details_returns_404_for_unknown_key(monkeypatch):
+    def fake_build_detail_payload(key):
+        raise KeyError(key)
+
+    monkeypatch.setattr(main.kpis, "build_detail_payload", fake_build_detail_payload)
+    client = TestClient(main.app)
+    resp = client.get("/api/details/onbekend", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 404
+
+
+def test_api_details_returns_payload_and_uses_per_key_cache(monkeypatch):
+    call_count = {"n": 0}
+    fake_rows = [{"name": "Deal A", "customer": "Grupoalava", "stage": "Onderhandeling (75%)",
+                  "probability": 50.0, "nominal": 1000000.0, "weighted": 500000.0}]
+
+    def fake_build_detail_payload(key):
+        call_count["n"] += 1
+        assert key == "pipeline"
+        return fake_rows
+
+    monkeypatch.setattr(main.kpis, "build_detail_payload", fake_build_detail_payload)
+    main._detail_cache.pop("pipeline", None)
+
+    client = TestClient(main.app)
+    headers = _auth_header("testuser", "testpass")
+
+    resp1 = client.get("/api/details/pipeline", headers=headers)
+    assert resp1.status_code == 200
+    assert resp1.json() == fake_rows
+    assert call_count["n"] == 1
+
+    # binnen de cache-periode: geen nieuwe Odoo-aanroep
+    resp2 = client.get("/api/details/pipeline", headers=headers)
+    assert resp2.status_code == 200
+    assert call_count["n"] == 1
+
+    # met ?refresh=1 wordt de cache overgeslagen
+    resp3 = client.get("/api/details/pipeline?refresh=1", headers=headers)
+    assert resp3.status_code == 200
+    assert call_count["n"] == 2
+
+
+def test_api_details_falls_back_to_stale_data_on_odoo_error(monkeypatch):
+    stale_rows = [{"name": "Oude data"}]
+    main._detail_cache["purchase_backlog"] = {"data": stale_rows, "fetched_at": 0.0}
+
+    def failing_build_detail_payload(key):
+        raise RuntimeError("Odoo-authenticatie mislukt")
+
+    monkeypatch.setattr(main.kpis, "build_detail_payload", failing_build_detail_payload)
+    client = TestClient(main.app)
+    resp = client.get("/api/details/purchase_backlog", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 200
+    assert resp.json() == stale_rows

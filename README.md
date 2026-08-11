@@ -2,7 +2,9 @@
 
 Een live KPI-dashboard voor Basetime B.V., dat de cijfers rechtstreeks uit Odoo
 (basetimebv.odoo.com) haalt: beschikbare cash, runway-indicatie, netto cashburn, order
-intake, recurring/subscription-omzet, brutomarge, inkoopbacklog en gewogen pipeline.
+intake, recurring/subscription-omzet, brutomarge, inkoopbacklog, gewogen pipeline, en
+(sinds deze versie) ouderdomsanalyse debiteuren/crediteuren, klantconcentratie in de
+gefactureerde omzet, en de benodigde break-evenomzet per maand.
 
 - **Backend**: Python (FastAPI), praat met Odoo via de officiële externe XML-RPC-API.
 - **Frontend**: één HTML-pagina (in `app/templates/dashboard.html`), haalt de cijfers op
@@ -86,9 +88,9 @@ In het Railway-project: tabblad **Variables** → voeg deze toe (zie ook `.env.e
 | `DASHBOARD_PASSWORD` | een sterk wachtwoord dat jij kiest |
 
 Optioneel (staan anders op een verstandige standaardwaarde — zie `app/config.py`):
-`CACHE_TTL_SECONDS`, `MONTHS_LOOKBACK`, `TOP_PIPELINE_DEALS`, `BANK_ACCOUNT_CODES`,
-`MAIN_OPERATING_BANK_CODE`, `CREDIT_LIMIT`, `FIXED_MONTHLY_COSTS`,
-`SUBSCRIPTION_ACCOUNT_CODES`.
+`CACHE_TTL_SECONDS`, `MONTHS_LOOKBACK`, `TOP_PIPELINE_DEALS`, `TOP_CUSTOMERS_N`,
+`CONCENTRATION_MONTHS_LOOKBACK`, `BANK_ACCOUNT_CODES`, `MAIN_OPERATING_BANK_CODE`,
+`CREDIT_LIMIT`, `FIXED_MONTHLY_COSTS`, `SUBSCRIPTION_ACCOUNT_CODES`.
 
 Na het opslaan start Railway automatisch een nieuwe deployment. Onder **Settings →
 Networking** kun je een publieke URL genereren (`*.up.railway.app`) of een eigen domein
@@ -147,3 +149,12 @@ pytest
 - **Inkoopbacklog** filtert geen verouderde/foutieve openstaande inkooporders.
 - De pijplijn-weging gebruikt alle open CRM-kansen (excl. "Closed won"/"Closed lost"),
   wat breder is dan een handmatige "geldige offertes"-selectie.
+- **Ouderdomsanalyse debiteuren/crediteuren** bucket't op `date_maturity` (met terugval op
+  de factuurdatum als die leeg is) — geen rekening met betalingsregelingen of dispute-status.
+- **Klantconcentratie** is gebaseerd op gefactureerde omzet over de laatste
+  `CONCENTRATION_MONTHS_LOOKBACK` maanden (standaard 12), niet op de pipeline. De
+  pijplijn heeft wél een eigen concentratiecijfer (`pipeline.top_customer_share_pct` in
+  de API-data), maar dat is nog niet als apart onderdeel op dit dashboard gezet.
+- **Break-evenomzet** gebruikt de gemiddelde (blended) marge over `MONTHS_LOOKBACK`
+  maanden, niet de marge van losse maanden — bij sterk wisselende marges per maand is dit
+  dus een indicatie, geen exacte drempel.

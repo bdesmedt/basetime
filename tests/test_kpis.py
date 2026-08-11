@@ -5,7 +5,7 @@ dashboard uit Odoo zijn gehaald (zie het KPI-voorstel-document), zodat deze test
 ook aantonen dat de rekenlogica dezelfde uitkomsten geeft als de handmatige analyse.
 """
 
-from datetime import date
+from datetime import date, timedelta
 
 from app import kpis
 
@@ -117,24 +117,205 @@ def test_purchase_backlog_splits_by_year():
 
 def test_pipeline_excludes_closed_stages_and_computes_weighted_value():
     client = FakeOdooClient()
-    calls = {"n": 0}
 
     def search_read(model, domain, fields, limit=0, order=None):
-        calls["n"] += 1
         if model == "crm.stage":
             return [{"id": 10, "name": "Closed won (100%)"}, {"id": 11, "name": "Closed lost (0%)"}]
         assert model == "crm.lead"
         # controleer dat de gesloten stages daadwerkelijk uitgesloten worden
         assert ["stage_id", "not in", [10, 11]] in domain
         return [
-            {"name": "Deal A", "stage_id": [9, "Onderhandeling (75%)"], "probability": 50.0, "expected_revenue": 1000000.0},
-            {"name": "Deal B", "stage_id": [17, "Offerte (50%)"], "probability": 79.51, "expected_revenue": 400000.0},
+            {
+                "name": "Deal A",
+                "stage_id": [9, "Onderhandeling (75%)"],
+                "partner_id": [1, "Grupoalava"],
+                "probability": 50.0,
+                "expected_revenue": 1000000.0,
+            },
+            {
+                "name": "Deal B",
+                "stage_id": [17, "Offerte (50%)"],
+                "partner_id": [2, "Sixense"],
+                "probability": 79.51,
+                "expected_revenue": 400000.0,
+            },
         ]
 
     client.search_read = search_read
 
-    pipeline = kpis.fetch_pipeline(client, top_n=10)
+    pipeline = kpis.fetch_pipeline(client, top_n=10, top_customers_n=5)
     assert pipeline["opportunity_count"] == 2
     assert pipeline["nominal_total"] == 1400000.0
     assert pipeline["weighted_total"] == round(0.5 * 1000000 + 0.7951 * 400000, 2)
     assert pipeline["top_deals"][0]["name"] == "Deal A"  # hoogste gewogen waarde eerst
+    assert pipeline["by_customer"][0]["name"] == "Grupoalava"
+    # Grupoalava (500.000 gewogen) is bijna het hele gewogen totaal -> hoge concentratie
+    assert pipeline["top_customer_share_pct"] > 80
+
+
+def test_pipeline_falls_back_to_placeholder_when_no_partner_linked():
+    client = FakeOdooClient()
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        if model == "crm.stage":
+            return []
+        return [
+            {"name": "Losse lead", "stage_id": [7, "Introductie (10%)"], "partner_id": False,
+             "probability": 10.0, "expected_revenue": 5000.0},
+        ]
+
+    client.search_read = search_read
+    pipeline = kpis.fetch_pipeline(client, top_n=10, top_customers_n=5)
+    assert pipeline["by_customer"][0]["name"] == "Niet gekoppeld aan klant"
+
+
+def test_ar_ap_aging_buckets_by_days_overdue_and_flips_payable_sign():
+    today = date.today()
+    overdue_45 = (today - timedelta(days=45)).isoformat()
+    not_due_yet = (today + timedelta(days=10)).isoformat()
+    client = FakeOdooClient()
+    calls = {"n": 0}
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        calls["n"] += 1
+        assert model == "account.move.line"
+        if calls["n"] == 1:  # debiteuren
+            return [
+                {"partner_id": [1, "Klant A"], "date_maturity": overdue_45, "date": overdue_45, "amount_residual": 1000.0},
+                {"partner_id": [2, "Klant B"], "date_maturity": not_due_yet, "date": not_due_yet, "amount_residual": 500.0},
+            ]
+        # crediteuren: amount_residual staat van nature negatief (credit-balans)
+        return [
+            {"partner_id": [3, "Leverancier X"], "date_maturity": overdue_45, "date": overdue_45, "amount_residual": -2000.0},
+        ]
+
+    client.search_read = search_read
+    aging = kpis.fetch_ar_ap_aging(client, top_n=5)
+
+    ar_buckets = {b["label"]: b["amount"] for b in aging["receivables"]["buckets"]}
+    assert ar_buckets["31-60 dagen"] == 1000.0
+    assert ar_buckets["Nog niet vervallen"] == 500.0
+    assert aging["receivables"]["total"] == 1500.0
+
+    ap_buckets = {b["label"]: b["amount"] for b in aging["payables"]["buckets"]}
+    assert ap_buckets["31-60 dagen"] == 2000.0  # teken omgedraaid -> positief "verschuldigd" bedrag
+    assert aging["payables"]["total"] == 2000.0
+    assert aging["payables"]["top_partners"][0]["name"] == "Leverancier X"
+
+
+def test_customer_revenue_concentration_computes_top_n_share():
+    client = FakeOdooClient()
+
+    def read_group(model, domain, fields, groupby):
+        assert model == "account.move"
+        return [
+            {"partner_id": [1, "Grupoalava"], "amount_untaxed_signed": 800000.0},
+            {"partner_id": [2, "Sixense"], "amount_untaxed_signed": 150000.0},
+            {"partner_id": [3, "Kleine klant"], "amount_untaxed_signed": 50000.0},
+        ]
+
+    client.read_group = read_group
+    result = kpis.fetch_customer_revenue_concentration(client, months=12, top_n=2)
+    assert result["total_revenue"] == 1000000.0
+    assert result["top_customers"][0]["name"] == "Grupoalava"
+    assert result["top_customers"][0]["share_pct"] == 80.0
+    assert result["top_n_share_pct"] == 95.0
+
+
+# --- Doorklik-detailschermen ("Bekijk alle") --------------------------------
+
+def test_ar_ap_aging_detail_returns_every_line_sorted_by_days_overdue():
+    today = date.today()
+    overdue_45 = (today - timedelta(days=45)).isoformat()
+    overdue_5 = (today - timedelta(days=5)).isoformat()
+    client = FakeOdooClient()
+    calls = {"n": 0}
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        calls["n"] += 1
+        if calls["n"] == 1:  # debiteuren
+            return [
+                {"partner_id": [1, "Klant A"], "move_id": [11, "INV/001"], "date_maturity": overdue_45, "date": overdue_45, "amount_residual": 1000.0},
+                {"partner_id": [2, "Klant B"], "move_id": [12, "INV/002"], "date_maturity": overdue_5, "date": overdue_5, "amount_residual": 500.0},
+            ]
+        return [  # crediteuren
+            {"partner_id": [3, "Leverancier X"], "move_id": [13, "BILL/001"], "date_maturity": overdue_45, "date": overdue_45, "amount_residual": -2000.0},
+        ]
+
+    client.search_read = search_read
+    detail = kpis.fetch_ar_ap_aging_detail(client)
+
+    assert len(detail["receivables"]) == 2
+    # meest achterstallige (45 dagen) eerst
+    assert detail["receivables"][0]["partner"] == "Klant A"
+    assert detail["receivables"][0]["days_overdue"] == 45
+    assert detail["receivables"][0]["bucket"] == "31-60 dagen"
+    assert detail["receivables"][0]["invoice"] == "INV/001"
+    assert len(detail["payables"]) == 1
+    assert detail["payables"][0]["amount"] == 2000.0  # teken omgedraaid, net als de samenvatting
+
+
+def test_pipeline_detail_returns_every_deal_with_customer_name():
+    client = FakeOdooClient()
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        if model == "crm.stage":
+            return []
+        return [
+            {"name": "Deal A", "stage_id": [9, "Onderhandeling (75%)"], "partner_id": [1, "Grupoalava"],
+             "probability": 50.0, "expected_revenue": 1000000.0},
+            {"name": "Losse lead", "stage_id": [7, "Introductie (10%)"], "partner_id": False,
+             "probability": 10.0, "expected_revenue": 5000.0},
+        ]
+
+    client.search_read = search_read
+    deals = kpis.fetch_pipeline_detail(client)
+
+    assert len(deals) == 2
+    assert deals[0]["name"] == "Deal A"  # hoogste gewogen waarde eerst
+    assert deals[0]["customer"] == "Grupoalava"
+    assert deals[1]["customer"] == "Niet gekoppeld aan klant"
+
+
+def test_customer_concentration_detail_returns_every_customer():
+    client = FakeOdooClient()
+
+    def read_group(model, domain, fields, groupby):
+        return [
+            {"partner_id": [1, "Grupoalava"], "amount_untaxed_signed": 800000.0},
+            {"partner_id": [2, "Sixense"], "amount_untaxed_signed": 150000.0},
+            {"partner_id": [3, "Kleine klant"], "amount_untaxed_signed": 50000.0},
+        ]
+
+    client.read_group = read_group
+    rows = kpis.fetch_customer_concentration_detail(client, months=12)
+
+    assert len(rows) == 3  # niet ingekort tot top-N, zoals de samenvattingsfunctie wel doet
+    assert rows[0]["name"] == "Grupoalava"
+    assert rows[0]["share_pct"] == 80.0
+    assert rows[-1]["name"] == "Kleine klant"
+
+
+def test_purchase_backlog_detail_returns_every_order_sorted_by_amount():
+    client = FakeOdooClient()
+    rows = [
+        {"name": "P00001", "partner_id": [1, "Leverancier A"], "amount_total": 1000.0,
+         "date_order": "2026-06-01 00:00:00", "date_planned": "2026-07-01 00:00:00"},
+        {"name": "P00002", "partner_id": [2, "Leverancier B"], "amount_total": 5000.0,
+         "date_order": "2026-05-01 00:00:00", "date_planned": "2026-08-01 00:00:00"},
+    ]
+    client.search_read = lambda model, domain, fields, limit=0, order=None: rows
+    detail = kpis.fetch_purchase_backlog_detail(client)
+
+    assert len(detail) == 2
+    assert detail[0]["name"] == "P00002"  # grootste bedrag eerst
+    assert detail[0]["supplier"] == "Leverancier B"
+    assert detail[0]["planned_date"] == "2026-08-01"
+
+
+def test_build_detail_payload_raises_key_error_for_unknown_section():
+    try:
+        kpis.build_detail_payload("onbekende-sectie")
+        assert False, "had een KeyError moeten opleveren"
+    except KeyError:
+        pass
