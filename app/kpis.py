@@ -502,6 +502,32 @@ def fetch_customer_concentration_detail(client: OdooClient, months: int) -> list
     ]
 
 
+def fetch_order_intake_detail(client: OdooClient, windows: list[tuple[date, date]]) -> list[dict]:
+    """Elke losse bevestigde order binnen de getoonde maanden (niet alleen het totaal per
+    maand), voor het doorklikscherm bij order intake. Zelfde selectie/domein als
+    fetch_order_intake."""
+    start, end = windows[0][0], windows[-1][1]
+    rows = client.search_read(
+        "sale.order",
+        [
+            ["state", "=", "sale"],
+            ["date_order", ">=", _iso(start)],
+            ["date_order", "<", _iso(end)],
+        ],
+        ["name", "partner_id", "date_order", "amount_total"],
+    )
+    rows.sort(key=lambda r: r.get("date_order") or "", reverse=True)
+    return [
+        {
+            "name": r.get("name") or "",
+            "customer": r["partner_id"][1] if r.get("partner_id") else "Onbekend",
+            "order_date": (r.get("date_order") or "")[:10] or None,
+            "amount": round(r.get("amount_total") or 0, 2),
+        }
+        for r in rows
+    ]
+
+
 def fetch_purchase_backlog_detail(client: OdooClient) -> list[dict]:
     """Elke losse openstaande inkooporder (niet alleen het totaal), voor het
     doorklikscherm bij de inkoopbacklog."""
@@ -530,6 +556,9 @@ DETAIL_FETCHERS = {
         client, config.CONCENTRATION_MONTHS_LOOKBACK
     ),
     "purchase_backlog": lambda client: fetch_purchase_backlog_detail(client),
+    "order_intake": lambda client: fetch_order_intake_detail(
+        client, complete_month_windows(config.MONTHS_LOOKBACK)
+    ),
 }
 
 

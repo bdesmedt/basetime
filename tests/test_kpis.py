@@ -348,6 +348,31 @@ def test_purchase_backlog_detail_returns_every_order_sorted_by_amount():
     assert detail[0]["planned_date"] == "2026-08-01"
 
 
+def test_order_intake_detail_returns_every_order_sorted_by_date_desc():
+    windows = kpis.complete_month_windows(2)
+    june_start, _ = windows[0]
+    july_start, _ = windows[1]
+    client = FakeOdooClient()
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        assert model == "sale.order"
+        assert ["state", "=", "sale"] in domain
+        return [
+            {"name": "S00010", "partner_id": [1, "Grupoalava"], "date_order": f"{june_start.isoformat()} 09:00:00", "amount_total": 25478.0},
+            {"name": "S00042", "partner_id": [2, "Sixense"], "date_order": f"{july_start.isoformat()} 14:30:00", "amount_total": 145051.0},
+            {"name": "S00099", "partner_id": False, "date_order": f"{july_start.isoformat()} 08:00:00", "amount_total": 500.0},
+        ]
+
+    client.search_read = search_read
+    detail = kpis.fetch_order_intake_detail(client, windows)
+
+    assert len(detail) == 3
+    assert detail[0]["name"] == "S00042"  # meest recente orderdatum eerst
+    assert detail[0]["customer"] == "Sixense"
+    assert detail[-1]["customer"] == "Grupoalava"
+    assert any(d["customer"] == "Onbekend" for d in detail)  # geen partner gekoppeld
+
+
 def test_build_detail_payload_raises_key_error_for_unknown_section():
     try:
         kpis.build_detail_payload("onbekende-sectie")

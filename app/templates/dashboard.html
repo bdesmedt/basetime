@@ -203,7 +203,10 @@
     <p class="section-note">Order intake = bevestigde verkooporders (state = sale) op orderdatum. Kasstroom = mutaties op de hoofd-bankrekening, dus inclusief incidentele inkoopbetalingen en klantontvangsten — geen gladgestreken cijfer.</p>
     <div class="charts">
       <div class="chart-card">
-        <h3>Order intake</h3>
+        <div class="heading-row">
+          <h3>Order intake</h3>
+          <button class="detail-link" onclick="openDetailModal('order_intake')">Bekijk alle orders →</button>
+        </div>
         <p class="chart-sub" id="sub-orders"></p>
         <svg id="chart-orders" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
       </div>
@@ -707,6 +710,7 @@ const DETAIL_TITLES = {
   pipeline: 'Alle open kansen in de pijplijn',
   customer_concentration: 'Alle klanten naar gefactureerde omzet',
   purchase_backlog: 'Alle open inkooporders',
+  order_intake: 'Alle bevestigde orders (order intake)',
 };
 
 async function openDetailModal(key){
@@ -806,6 +810,19 @@ function renderDetailModal(){
       {label:'Klant', fmt:r=>r.name},
       {label:'Omzet (€)', fmt:r=>fmtEUR0.format(r.amount)},
       {label:'Aandeel', fmt:r=>fmtPct(r.share_pct)},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+
+  if (key === 'order_intake'){
+    const rows = q ? data.filter(d => (d.name+d.customer).toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' bevestigde orders';
+    const cols = [
+      {label:'Order', fmt:r=>r.name},
+      {label:'Klant', fmt:r=>r.customer},
+      {label:'Orderdatum', fmt:r=>r.order_date||'–'},
+      {label:'Bedrag (€)', fmt:r=>fmtEUR0.format(r.amount)},
     ];
     body.innerHTML = detailTable(cols, rows);
     return;
