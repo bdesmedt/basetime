@@ -99,6 +99,41 @@ def test_bank_balance_now_sums_all_matched_accounts():
     assert balance == -88872.49
 
 
+def test_order_intake_buckets_by_month_from_datetime_field():
+    """sale.order.date_order is een Datetime-veld (met tijdcomponent), anders dan de
+    Date-velden die de andere KPI's gebruiken — deze test simuleert dus echte Odoo-rijen
+    met een tijdcomponent (en state=sale), niet de __range-mock-vorm van read_group."""
+    windows = kpis.complete_month_windows(2)  # bv. juni + juli
+    june_start, _ = windows[0]
+    july_start, july_end = windows[1]
+    june_order_date = date(june_start.year, june_start.month, 15)
+    july_order_date = date(july_start.year, july_start.month, 3)
+
+    client = FakeOdooClient()
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        assert model == "sale.order"
+        assert ["state", "=", "sale"] in domain
+        return [
+            {"date_order": f"{june_order_date.isoformat()} 09:00:00", "amount_total": 25478.0},
+            {"date_order": f"{july_order_date.isoformat()} 14:30:00", "amount_total": 145051.0},
+        ]
+
+    client.search_read = search_read
+    orders = kpis.fetch_order_intake(client, windows)
+
+    assert orders == [25478.0, 145051.0]  # juni, juli — niet allebei 0
+
+
+def test_order_intake_is_zero_for_months_with_no_confirmed_orders():
+    windows = kpis.complete_month_windows(2)
+    client = FakeOdooClient()
+    client.search_read = lambda model, domain, fields, limit=0, order=None: []
+
+    orders = kpis.fetch_order_intake(client, windows)
+    assert orders == [0.0, 0.0]
+
+
 def test_purchase_backlog_splits_by_year():
     this_year = date.today().year
     rows = [

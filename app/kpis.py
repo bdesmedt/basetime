@@ -145,20 +145,36 @@ def fetch_subscription_revenue(client: OdooClient, windows: list[tuple[date, dat
     return [round(-(idx.get(_iso(mstart), {}).get("balance") or 0), 2) for mstart, _ in windows]
 
 
-def fetch_order_intake(client: OdooClient, windows: list[tuple[date, date]]):
+def fetch_order_intake(client: OdooClient, windows: list[tuple[date, date]]) -> list[float]:
+    """Let op: `sale.order.date_order` is in Odoo een Datetime-veld (met tijdcomponent),
+    anders dan de Date-velden (`date`, `invoice_date`) die de andere KPI's hierboven
+    gebruiken. Odoo's read_group met groupby=['date_order:month'] geeft __range-grenzen
+    terug als datetime-strings (bv. "2026-07-01 00:00:00", eventueel zelfs met een
+    tijdzone-verschuiving als er geen expliciete UTC-context wordt meegegeven), terwijl
+    _index_by_range_start() daar met een kale datumstring ("2026-07-01") naar op zoek
+    ging — die twee matchten dus nooit, waardoor deze KPI altijd op 0 uitkwam voor élke
+    maand. Om dat definitief te vermijden, halen we hier de losse orders op en bucketen
+    we zelf in Python op het datumgedeelte van `date_order`."""
     start, end = windows[0][0], windows[-1][1]
-    rows = client.read_group(
+    rows = client.search_read(
         "sale.order",
         [
             ["state", "=", "sale"],
             ["date_order", ">=", _iso(start)],
             ["date_order", "<", _iso(end)],
         ],
-        ["amount_total"],
-        ["date_order:month"],
+        ["date_order", "amount_total"],
     )
-    idx = _index_by_range_start(rows, "date_order:month")
-    return [round(idx.get(_iso(mstart), {}).get("amount_total") or 0, 2) for mstart, _ in windows]
+    totals: dict[str, float] = {_iso(mstart): 0.0 for mstart, _ in windows}
+    for row in rows:
+        date_order = row.get("date_order")
+        if not date_order:
+            continue
+        order_date = datetime.strptime(date_order[:10], "%Y-%m-%d").date()
+        month_key = _iso(date(order_date.year, order_date.month, 1))
+        if month_key in totals:
+            totals[month_key] += row.get("amount_total") or 0
+    return [round(totals[_iso(mstart)], 2) for mstart, _ in windows]
 
 
 def fetch_cashflow(client: OdooClient, windows: list[tuple[date, date]]):
