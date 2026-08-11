@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Basetime — KPI-dashboard</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    color: var(--text-primary);
+    background: var(--page-plane);
+    display: block;
+    min-height: 100vh;
+    --surface-1:      #fcfcfb;
+    --page-plane:     #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --success-text:   #006300;
+
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-8: #e34948;
+
+    --seq-100: #cde2fb;
+
+    --status-good: #0ca30c;
+    --status-warning: #fab219;
+    --status-serious: #ec835a;
+    --status-critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page-plane:     #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --success-text:   #0ca30c;
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --series-8: #e66767;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page-plane:     #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --gridline:       #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --success-text:   #0ca30c;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --series-8: #e66767;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--page-plane); color: var(--text-primary); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; }
+
+  header.top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; flex-wrap: wrap; gap: 12px; }
+  h1 { font-size: 22px; font-weight: 650; margin: 0 0 4px; }
+  .subtitle { color: var(--text-secondary); font-size: 13.5px; margin: 0; }
+  .meta { text-align: right; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+  .live-badge { display: inline-flex; align-items: center; gap: 5px; background: var(--status-good); color: #ffffff; font-size: 11px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; margin-bottom: 8px; }
+  .live-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: #fff; }
+  .btn { border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary); font-size: 12px; padding: 5px 10px; border-radius: 6px; cursor: pointer; margin-left: 6px; }
+  .btn:hover { color: var(--text-primary); }
+
+  h2.section { font-size: 14px; font-weight: 650; color: var(--text-primary); margin: 32px 0 12px; }
+  p.section-note { color: var(--text-secondary); font-size: 13px; margin: -6px 0 14px; max-width: 760px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  @media (max-width: 900px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px 12px; position: relative; overflow: hidden; }
+  .tile .label { font-size: 12px; color: var(--text-secondary); margin: 0 0 6px; padding-right: 82px; }
+  .tile .value { font-size: 22px; font-weight: 650; color: var(--text-primary); line-height: 1.15; }
+  .tile .sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
+  .tile .delta { font-size: 12px; font-weight: 600; margin-top: 3px; }
+  .tile .delta.bad { color: var(--status-critical); }
+  .tile .delta.good { color: var(--success-text); }
+  .tile svg.spark { position: absolute; right: 10px; bottom: 10px; opacity: 0.9; }
+  .tile .flag { position: absolute; top: 10px; right: 10px; font-size: 10px; padding: 2px 6px; border-radius: 10px; font-weight: 700; }
+  .flag.warn { background: var(--status-warning); color: #1a1a19; }
+  .flag.gap { background: var(--status-serious); color: #1a1a19; }
+  .flag.crit { background: var(--status-critical); color: #ffffff; }
+  .flag.ok { background: var(--status-good); color: #ffffff; }
+
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 4px; }
+  @media (max-width: 900px) { .charts { grid-template-columns: 1fr; } }
+  .chart-card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px 12px; }
+  .chart-card h3 { font-size: 13px; font-weight: 650; margin: 0 0 2px; }
+  .chart-card .chart-sub { font-size: 11.5px; color: var(--text-muted); margin: 0 0 10px; }
+  .legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--text-secondary); margin-bottom: 8px; }
+  .legend .key { display: inline-flex; align-items: center; gap: 5px; }
+  .legend .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .axis-label { font-size: 10.5px; fill: var(--text-muted); }
+  .gridline { stroke: var(--gridline); stroke-width: 1; }
+  .baseline { stroke: var(--baseline); stroke-width: 1; }
+  .data-label { font-size: 10.5px; fill: var(--text-secondary); font-weight: 600; }
+
+  table.data-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.data-table th, table.data-table td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--gridline); }
+  table.data-table th:first-child, table.data-table td:first-child { text-align: left; }
+  table.data-table th { color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .02em; }
+  table.data-table td { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  table.data-table td.name { color: var(--text-primary); }
+
+  .notes { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-top: 8px; }
+  .notes ul { margin: 6px 0 0; padding-left: 18px; }
+  .notes li { font-size: 12.5px; color: var(--text-secondary); margin-bottom: 6px; line-height: 1.5; }
+  .notes li b { color: var(--text-primary); }
+
+  .banner { border-radius: 8px; padding: 12px 16px; font-size: 13px; margin-bottom: 18px; display: none; }
+  .banner.error { background: rgba(208,59,59,0.12); border: 1px solid var(--status-critical); color: var(--text-primary); }
+  .banner.warn { background: rgba(250,178,25,0.12); border: 1px solid var(--status-warning); color: var(--text-primary); }
+  .skeleton { color: var(--text-muted); font-size: 13px; padding: 40px 0; text-align: center; }
+
+  footer { margin-top: 28px; color: var(--text-muted); font-size: 11.5px; text-align: center; }
+
+  #tooltip { position: fixed; pointer-events: none; z-index: 50; display: none; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; color: var(--text-primary); box-shadow: 0 2px 10px rgba(0,0,0,0.15); white-space: nowrap; }
+  #tooltip .tt-label { color: var(--text-muted); font-size: 10.5px; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+<div id="tooltip"></div>
+<div class="wrap">
+
+  <header class="top">
+    <div>
+      <span class="live-badge"><span class="dot"></span>Live uit Odoo</span>
+      <h1>Basetime B.V. — KPI-dashboard</h1>
+      <p class="subtitle">basetimebv.odoo.com</p>
+    </div>
+    <div class="meta">
+      <span id="last-updated">Laden…</span><br>
+      <button class="btn" onclick="loadData(true)">Vernieuwen</button>
+      <button class="btn" onclick="toggleTheme()">Donker / licht</button>
+    </div>
+  </header>
+
+  <div class="banner error" id="banner-error"></div>
+  <div class="banner warn" id="banner-warn"></div>
+  <div class="skeleton" id="skeleton">Cijfers ophalen uit Odoo…</div>
+
+  <div id="app" style="display:none">
+
+    <h2 class="section">Kern — vandaag</h2>
+    <div class="tiles" id="tiles-top"></div>
+
+    <h2 class="section">Omzet, marge &amp; pijplijn</h2>
+    <div class="tiles" id="tiles-bottom"></div>
+
+    <h2 class="section">Omzet en kostprijs per maand</h2>
+    <p class="section-note" id="note-revcogs"></p>
+    <div class="charts">
+      <div class="chart-card">
+        <h3>Omzet vs. kostprijs</h3>
+        <p class="chart-sub" id="sub-revcogs"></p>
+        <div class="legend">
+          <span class="key"><span class="swatch" style="background:var(--series-1)"></span>Netto-omzet</span>
+          <span class="key"><span class="swatch" style="background:var(--series-2)"></span>Kostprijs</span>
+        </div>
+        <svg id="chart-revcogs" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+      <div class="chart-card">
+        <h3>Brutomarge %</h3>
+        <p class="chart-sub" id="sub-margin"></p>
+        <svg id="chart-margin" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+    </div>
+
+    <h2 class="section">Order intake en kasstroom</h2>
+    <p class="section-note">Order intake = bevestigde verkooporders (state = sale) op orderdatum. Kasstroom = mutaties op de hoofd-bankrekening, dus inclusief incidentele inkoopbetalingen en klantontvangsten — geen gladgestreken cijfer.</p>
+    <div class="charts">
+      <div class="chart-card">
+        <h3>Order intake</h3>
+        <p class="chart-sub" id="sub-orders"></p>
+        <svg id="chart-orders" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+      <div class="chart-card">
+        <h3>Netto kasstroom</h3>
+        <p class="chart-sub" id="sub-cash"></p>
+        <svg id="chart-cash" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+    </div>
+
+    <h2 class="section">Gewogen pipeline per fase</h2>
+    <p class="section-note" id="note-pipeline"></p>
+    <div class="charts">
+      <div class="chart-card" style="grid-column: 1 / -1;">
+        <svg id="chart-pipeline" width="100%" height="230" viewBox="0 0 1080 230" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+    </div>
+
+    <h2 class="section" id="top-deals-heading">Top kansen naar gewogen waarde</h2>
+    <div class="chart-card">
+      <table class="data-table" id="pipeline-table">
+        <thead><tr><th>Kans</th><th>Fase</th><th>Kans %</th><th>Nominaal (€)</th><th>Gewogen (€)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <h2 class="section">Aandachtspunten</h2>
+    <div class="notes">
+      <ul>
+        <li><b>Runway</b> is een vereenvoudigde indicator: (beschikbare cash − kredietlimiet) ÷ vaste maandlasten. Voor een volledig scenariomodel met inkoopplanning en debiteuren/crediteurentiming is aanvullende analyse nodig — dit cijfer is een signaal, geen vervanging daarvoor.</li>
+        <li><b>Netto cashburn</b> kan van maand tot maand sterk wisselen door incidentele inkoopbetalingen en klantontvangsten. De vaste maandlasten zijn een stabielere indicator voor structurele burn dan de ruwe bankmutatie.</li>
+        <li><b>Recurring/subscription-omzet</b> toont geboekte omzet op de subscription-rekeningen — dat is herkende omzet, geen vooruitontvangen/deferred-revenue-saldo. Voor een echte deferred-revenue-KPI is verbruiksregistratie per klant nodig.</li>
+        <li><b>Inkoopbacklog</b> is een ruw totaal van alle niet-volledig-gefactureerde inkooporders; verouderde of foutieve openstaande orders zijn hier niet gefilterd.</li>
+        <li id="note-concentration"><b>Gewogen pipeline</b> kan sterk leunen op een klein aantal grote deals — zie de tabel met topkansen voor de concentratie.</li>
+        <li><b>Brutomarge</b> is niet gecorrigeerd voor eventuele boekingsfouten (verkeerde omzetrekening, niet-geboekte kosteloze leveringen, etc.) — controleer bij afwijkingen altijd de onderliggende boekingen.</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>Basetime B.V. · basetimebv.odoo.com · KPI-dashboard</footer>
+</div>
+</div>
+
+<script>
+const fmtEUR0 = new Intl.NumberFormat('nl-NL', {style:'currency', currency:'EUR', maximumFractionDigits:0});
+const fmtEURK = (v) => {
+  const a = Math.abs(v);
+  if (a >= 1000000) return (v/1000000).toFixed(v%1000000===0?0:1).replace('.',',') + 'M';
+  if (a >= 1000) return Math.round(v/1000) + 'K';
+  return Math.round(v).toString();
+};
+const fmtPct = (v) => (v===null||v===undefined) ? '–' : v.toFixed(1).replace('.',',') + '%';
+
+function toggleTheme(){
+  const root = document.documentElement;
+  if (root.getAttribute('data-theme') === 'dark') { root.removeAttribute('data-theme'); }
+  else { root.setAttribute('data-theme','dark'); }
+}
+
+const tooltip = document.getElementById('tooltip');
+function showTip(evt, html){
+  tooltip.innerHTML = html;
+  tooltip.style.display = 'block';
+  tooltip.style.left = (evt.clientX + 14) + 'px';
+  tooltip.style.top = (evt.clientY - 10) + 'px';
+}
+function hideTip(){ tooltip.style.display = 'none'; }
+function css(name){ return getComputedStyle(document.querySelector('.viz-root')).getPropertyValue(name).trim(); }
+function attachTooltips(svg){
+  svg.querySelectorAll('[data-tip]').forEach(el=>{
+    el.addEventListener('mousemove', (evt)=>{
+      const [lab, name, val] = el.getAttribute('data-tip').split('|');
+      showTip(evt, `<div class="tt-label">${lab}${name?(' · '+name):''}</div><div>${val}</div>`);
+    });
+    el.addEventListener('mouseleave', hideTip);
+  });
+}
+
+function sparkline(values, color){
+  if (!values || values.length < 2) return '';
+  const w=90,h=28,pad=2;
+  const min=Math.min(...values), max=Math.max(...values);
+  const range = (max-min)||1;
+  const pts = values.map((v,i)=>{
+    const x = pad + i*(w-2*pad)/(values.length-1);
+    const y = h-pad - (v-min)/range*(h-2*pad);
+    return [x,y];
+  });
+  const path = pts.map((p,i)=> (i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  const last = pts[pts.length-1];
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+    <path d="${path}" fill="none" stroke="${color}" stroke-width="1.6" opacity="0.55" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="2.4" fill="${color}"/>
+  </svg>`;
+}
+
+function tile(label, value, sub, delta, values, color, flag){
+  const div = document.createElement('div');
+  div.className = 'tile';
+  div.innerHTML = `
+    ${flag ? `<span class="flag ${flag.cls}">${flag.text}</span>` : ''}
+    <p class="label">${label}</p>
+    <div class="value">${value}</div>
+    ${delta ? `<div class="delta ${delta.cls}">${delta.text}</div>` : ''}
+    ${sub ? `<p class="sub">${sub}</p>` : ''}
+    ${values ? sparkline(values, color) : ''}
+  `;
+  return div;
+}
+
+function drawGroupedBar(svgId, labels, seriesA, seriesB, colorA, colorB, fmtValue){
+  const svg = document.getElementById(svgId);
+  const W=520,H=220, ML=8, MR=8, MT=14, MB=28;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  const maxV = Math.max(...seriesA, ...seriesB, 1) * 1.12;
+  const bandW = plotW/labels.length;
+  const barW = Math.min(16, bandW*0.30);
+  let s = `<g>`;
+  for(let g=0;g<=4;g++){
+    const y = MT + plotH - g*plotH/4;
+    s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+    s += `<text class="axis-label" x="${ML}" y="${y-3}">${fmtEURK(g*maxV/4)}</text>`;
+  }
+  labels.forEach((lab,i)=>{
+    const cx = ML + bandW*i + bandW/2;
+    const xa = cx - barW - 2, xb = cx + 2;
+    const ha = seriesA[i]/maxV*plotH, hb = seriesB[i]/maxV*plotH;
+    const ya = MT+plotH-ha, yb = MT+plotH-hb;
+    s += `<rect data-tip="${lab}|Netto-omzet|${fmtValue(seriesA[i])}" x="${xa}" y="${ya}" width="${barW}" height="${ha}" rx="3" fill="${colorA}"/>`;
+    s += `<rect data-tip="${lab}|Kostprijs|${fmtValue(seriesB[i])}" x="${xb}" y="${yb}" width="${barW}" height="${hb}" rx="3" fill="${colorB}"/>`;
+    s += `<text class="axis-label" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+  });
+  s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${MT+plotH}" y2="${MT+plotH}"/>`;
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
+function drawBar(svgId, labels, series, color, fmtValue, diverging){
+  const svg = document.getElementById(svgId);
+  const W=520,H=220, ML=8, MR=8, MT=14, MB=28;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  const bandW = plotW/labels.length;
+  const barW = Math.min(26, bandW*0.5);
+  let s = `<g>`;
+  if (diverging){
+    const maxAbs = Math.max(...series.map(Math.abs), 1) * 1.15;
+    const zeroY = MT + plotH/2;
+    for(let g=-2;g<=2;g++){
+      const y = zeroY - g*plotH/2/2;
+      s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+      s += `<text class="axis-label" x="${ML}" y="${y-3}">${fmtEURK(g*maxAbs/2)}</text>`;
+    }
+    labels.forEach((lab,i)=>{
+      const cx = ML + bandW*i + bandW/2;
+      const v = series[i];
+      const h = Math.abs(v)/maxAbs*(plotH/2);
+      const y = v>=0 ? zeroY-h : zeroY;
+      const c = v>=0 ? css('--series-1') : css('--series-8');
+      s += `<rect data-tip="${lab}|Netto kasstroom|${fmtValue(v)}" x="${cx-barW/2}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${c}"/>`;
+      s += `<text class="axis-label" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+    });
+    s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${zeroY}" y2="${zeroY}"/>`;
+  } else {
+    const maxV = Math.max(...series, 1) * 1.12;
+    for(let g=0;g<=4;g++){
+      const y = MT + plotH - g*plotH/4;
+      s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+      s += `<text class="axis-label" x="${ML}" y="${y-3}">${fmtEURK(g*maxV/4)}</text>`;
+    }
+    labels.forEach((lab,i)=>{
+      const cx = ML + bandW*i + bandW/2;
+      const h = series[i]/maxV*plotH;
+      const y = MT+plotH-h;
+      s += `<rect data-tip="${lab}||${fmtValue(series[i])}" x="${cx-barW/2}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${color}"/>`;
+      s += `<text class="axis-label" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+    });
+    s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${MT+plotH}" y2="${MT+plotH}"/>`;
+  }
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
+function drawLine(svgId, labels, series, color, fmtValue){
+  const svg = document.getElementById(svgId);
+  const W=520,H=220, ML=8, MR=8, MT=14, MB=28;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  const minV = Math.min(...series)*0.9, maxV = Math.max(...series, 1)*1.08;
+  const range = (maxV-minV)||1;
+  const stepX = plotW/Math.max(labels.length-1,1);
+  let s = `<g>`;
+  for(let g=0;g<=4;g++){
+    const y = MT + plotH - g*plotH/4;
+    const val = minV + g*range/4;
+    s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+    s += `<text class="axis-label" x="${ML}" y="${y-3}">${fmtValue(val)}</text>`;
+  }
+  const pts = series.map((v,i)=>[ML+i*stepX, MT+plotH-(v-minV)/range*plotH]);
+  const path = pts.map((p,i)=>(i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  s += `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  pts.forEach((p,i)=>{
+    s += `<circle data-tip="${labels[i]}||${fmtValue(series[i])}" cx="${p[0]}" cy="${p[1]}" r="4.5" fill="${color}" stroke="${css('--surface-1')}" stroke-width="2"/>`;
+    s += `<text class="axis-label" x="${p[0]}" y="${H-8}" text-anchor="middle">${labels[i]}</text>`;
+  });
+  if (pts.length){
+    const lastp = pts[pts.length-1];
+    s += `<text class="data-label" x="${lastp[0]}" y="${lastp[1]-10}" text-anchor="middle">${fmtValue(series[series.length-1])}</text>`;
+  }
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
+function drawHBar(svgId, data){
+  const svg = document.getElementById(svgId);
+  const W=1080,H=230, ML=170, MR=90, MT=10, MB=10;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  if (!data.length){ svg.innerHTML = ''; return; }
+  const rowH = plotH/data.length;
+  const barH = Math.min(26, rowH*0.55);
+  const maxV = Math.max(...data.map(d=>d.nominal), 1)*1.05;
+  let s = `<g>`;
+  const gticks = 4;
+  for(let g=0;g<=gticks;g++){
+    const x = ML + g*plotW/gticks;
+    s += `<line class="gridline" x1="${x}" x2="${x}" y1="${MT}" y2="${H-MB}"/>`;
+    s += `<text class="axis-label" x="${x}" y="${H-2}" text-anchor="middle">${fmtEURK(g*maxV/gticks)}</text>`;
+  }
+  data.forEach((d,i)=>{
+    const cy = MT + rowH*i + rowH/2;
+    const wNom = d.nominal/maxV*plotW;
+    const wWei = d.weighted/maxV*plotW;
+    s += `<text class="axis-label" x="${ML-10}" y="${cy+4}" text-anchor="end">${d.stage}</text>`;
+    s += `<rect data-tip="${d.stage}|Nominaal|${fmtEUR0.format(d.nominal)}" x="${ML}" y="${cy-barH/2}" width="${wNom}" height="${barH}" rx="4" fill="var(--seq-100)"/>`;
+    s += `<rect data-tip="${d.stage}|Gewogen|${fmtEUR0.format(d.weighted)}" x="${ML}" y="${cy-barH/2}" width="${wWei}" height="${barH}" rx="4" fill="${css('--series-1')}"/>`;
+    s += `<text class="data-label" x="${ML+Math.max(wNom,wWei)+8}" y="${cy+4}">${fmtEURK(d.weighted)}</text>`;
+  });
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+
+  const existingLegend = svg.parentElement.querySelector('.legend.dynamic');
+  if (existingLegend) existingLegend.remove();
+  const legend = document.createElement('div');
+  legend.className = 'legend dynamic';
+  legend.style.marginTop = '10px';
+  legend.innerHTML = `<span class="key"><span class="swatch" style="background:var(--seq-100)"></span>Nominaal (100%)</span>
+                       <span class="key"><span class="swatch" style="background:var(--series-1)"></span>Gewogen (kans x nominaal)</span>`;
+  svg.parentElement.appendChild(legend);
+}
+
+function render(payload){
+  document.getElementById('skeleton').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+
+  const updated = new Date(payload.generated_at);
+  document.getElementById('last-updated').textContent = 'Bijgewerkt: ' + updated.toLocaleString('nl-NL');
+
+  const errBanner = document.getElementById('banner-error');
+  const warnBanner = document.getElementById('banner-warn');
+  errBanner.style.display = 'none';
+  warnBanner.style.display = 'none';
+  if (payload.stale_error){
+    warnBanner.style.display = 'block';
+    warnBanner.textContent = 'Kon geen verse data ophalen uit Odoo (' + payload.stale_error + '). Cijfers hieronder zijn de laatst bekende, van ' + updated.toLocaleString('nl-NL') + '.';
+  }
+
+  const labels = payload.window.labels;
+  const tilesTop = document.getElementById('tiles-top');
+  const tilesBottom = document.getElementById('tiles-bottom');
+  tilesTop.innerHTML = ''; tilesBottom.innerHTML = '';
+
+  const headroomFlag = payload.cash.credit_headroom < 0
+    ? {cls:'crit', text:'over de limiet'}
+    : {cls:'ok', text:'binnen kredietlimiet'};
+
+  tilesTop.appendChild(tile('Beschikbare cash', fmtEUR0.format(payload.cash.available_now), 'som van de bankrekeningen, nu', null, null, null, headroomFlag));
+  tilesTop.appendChild(tile('Resterende kredietruimte', fmtEUR0.format(payload.cash.credit_headroom), 'tot kredietlimiet van ' + fmtEUR0.format(payload.cash.credit_limit)));
+  tilesTop.appendChild(tile('Runway (indicatie)', payload.runway.weeks + ' weken', 'kredietruimte ÷ vaste maandlasten — vereenvoudigd', null, null, null, {cls:'warn', text:'vereenvoudigd'}));
+  tilesTop.appendChild(tile('Netto cashburn (structureel)', fmtEUR0.format(payload.runway.fixed_monthly_costs) + ' / mnd', 'vaste maandlasten; werkelijke bankmutatie gem. ' + fmtEUR0.format(payload.cashflow_avg) + '/mnd', null, payload.cashflow, css('--series-8')));
+
+  const lastIdx = payload.margin_pct.length - 1;
+  const lastMonthLabel = labels.length ? labels[labels.length-1] : '';
+  tilesBottom.appendChild(tile('Order intake — ' + lastMonthLabel, fmtEUR0.format(payload.order_intake[payload.order_intake.length-1] || 0), payload.window.label_text + ': ' + fmtEUR0.format(payload.order_intake_sum), null, payload.order_intake, css('--series-1')));
+  tilesBottom.appendChild(tile('Recurring omzet (subscription) — ' + lastMonthLabel, fmtEUR0.format(payload.recurring_revenue[payload.recurring_revenue.length-1] || 0), 'gem. ' + fmtEUR0.format(payload.recurring_revenue_avg) + ' / mnd', null, payload.recurring_revenue, css('--series-3')));
+  tilesBottom.appendChild(tile('Brutomarge — ' + lastMonthLabel, fmtPct(payload.margin_pct[lastIdx]), payload.window.label_text, null, payload.margin_pct, css('--series-1')));
+
+  const topDeal = payload.pipeline.top_deals[0];
+  const topShare = topDeal && payload.pipeline.weighted_total ? Math.round(topDeal.weighted/payload.pipeline.weighted_total*100) : 0;
+  tilesBottom.appendChild(tile('Gewogen pipeline', fmtEUR0.format(payload.pipeline.weighted_total), payload.pipeline.opportunity_count + ' open kansen, nominaal ' + fmtEUR0.format(payload.pipeline.nominal_total), null, null, null, topShare>=20?{cls:'gap',text:'geconcentreerd'}:null));
+  tilesBottom.appendChild(tile('Inkoopbacklog', fmtEUR0.format(payload.purchase_backlog.total), payload.purchase_backlog.order_count + ' open orders, waarvan ' + fmtEUR0.format(payload.purchase_backlog.future_years) + ' in latere jaren'));
+
+  document.getElementById('note-revcogs').textContent = 'Netto-omzet en kostprijs uit geboekte grootboekmutaties (rekeningtype income / expense_direct_cost), over ' + payload.window.label_text + '. De lopende maand is weggelaten omdat die nooit compleet is.';
+  document.getElementById('sub-revcogs').textContent = 'Per maand (€)';
+  document.getElementById('sub-margin').textContent = 'Per maand';
+  document.getElementById('sub-orders').textContent = 'Per maand (€)';
+  document.getElementById('sub-cash').textContent = 'Per maand (€) — boven/onder nul';
+
+  drawGroupedBar('chart-revcogs', labels, payload.revenue, payload.cogs, css('--series-1'), css('--series-2'), (v)=>fmtEUR0.format(v));
+  drawLine('chart-margin', labels, payload.margin_pct, css('--series-1'), (v)=>fmtPct(v));
+  drawBar('chart-orders', labels, payload.order_intake, css('--series-1'), (v)=>fmtEUR0.format(v), false);
+  drawBar('chart-cash', labels, payload.cashflow, null, (v)=>fmtEUR0.format(v), true);
+  drawHBar('chart-pipeline', payload.pipeline.by_stage);
+
+  document.getElementById('note-pipeline').textContent = payload.pipeline.opportunity_count + ' open kansen in de CRM-pijplijn (excl. gesloten-won / gesloten-verloren), gewogen met de kans per opportunity uit Odoo.';
+  if (topDeal){
+    document.getElementById('note-concentration').innerHTML = '<b>Gewogen pipeline</b> (' + fmtEUR0.format(payload.pipeline.weighted_total) + ') kan sterk leunen op een klein aantal grote deals. De grootste kans nu — "' + topDeal.name + '" — is alleen al ' + fmtEUR0.format(topDeal.weighted) + ' (' + topShare + '%) van het gewogen totaal.';
+  }
+
+  const tbody = document.querySelector('#pipeline-table tbody');
+  tbody.innerHTML = '';
+  payload.pipeline.top_deals.forEach(d=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">${d.name}</td><td>${d.stage}</td><td>${fmtPct(d.probability)}</td><td>${fmtEUR0.format(d.nominal)}</td><td>${fmtEUR0.format(d.weighted)}</td>`;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('top-deals-heading').textContent = 'Top ' + payload.pipeline.top_deals.length + ' kansen naar gewogen waarde';
+}
+
+async function loadData(forceRefresh){
+  try{
+    const resp = await fetch('/api/kpis' + (forceRefresh ? '?refresh=1' : ''));
+    if (!resp.ok){
+      const body = await resp.json().catch(()=>({detail: resp.statusText}));
+      throw new Error(body.detail || resp.statusText);
+    }
+    const payload = await resp.json();
+    render(payload);
+  } catch (err){
+    document.getElementById('skeleton').style.display = 'none';
+    document.getElementById('app').style.display = 'none';
+    const errBanner = document.getElementById('banner-error');
+    errBanner.style.display = 'block';
+    errBanner.textContent = 'Kon het dashboard niet laden: ' + err.message;
+  }
+}
+
+loadData(false);
+</script>
+</body>
+</html>
