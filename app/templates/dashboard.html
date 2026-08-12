@@ -344,6 +344,10 @@
       <h2 class="section">Voorraad — vandaag</h2>
       <div class="tiles" id="tiles-inventory"></div>
 
+      <h2 class="section">Wat er nog uit de voorraad te halen valt</h2>
+      <p class="section-note" id="note-stock-revenue"></p>
+      <div class="tiles" id="tiles-stock-revenue"></div>
+
       <h2 class="section">Voorraadwaarde per product</h2>
       <p class="section-note">Actuele waarde per artikel in interne locaties (magazijn), op basis van Odoo's eigen voorraadwaardering per stuk (standaard-/gemiddelde kostprijs) — zie de toelichting onderaan over het periodieke voorraadstelsel.</p>
       <div class="charts">
@@ -353,7 +357,10 @@
             <button class="detail-link" onclick="openDetailModal('stock_value')">Bekijk alle producten →</button>
           </div>
           <table class="data-table" id="stock-value-table">
-            <thead><tr><th>Product</th><th>Aantal</th><th>Waarde (€)</th></tr></thead>
+            <thead><tr>
+              <th>Product</th><th>Aantal</th><th>Kostprijs (€)</th>
+              <th>Verkoopprijs p/st</th><th>Opbrengst (€)</th><th>Marge (€)</th>
+            </tr></thead>
             <tbody></tbody>
           </table>
         </div>
@@ -382,6 +389,7 @@
           <li><b>Voorraadwaarde</b> komt uit Odoo's eigen voorraadwaardering per artikel (standaard-/gemiddelde kostprijs), niet uit een boekhoudkundige tussenrekening. Basetime gebruikt in Odoo een periodiek voorraadstelsel (zie de afsluitmemo) — dit cijfer is een actuele indicatie voor sturing, geen grootboeksaldo, en sluit dus niet automatisch aan op de balans.</li>
           <li><b>Voorraadrotatie/dekking</b> = voorraadwaarde nu ÷ gemiddelde kostprijs van de omzet per maand over de getoonde periode — hoeveel maanden verkoop de huidige voorraad dekt bij het huidige tempo, blended over alle producten. Dit verbergt grote verschillen per artikel (sommige posten liggen al 20+ maanden, andere zijn juist bijna op) — voor sturing per inkooporder blijft de eerdere cashflowprognose-analyse relevant.</li>
           <li><b>Voorraadbewegingen</b> telt alleen mutaties van/naar interne locaties: ontvangst vanaf leverancier/productie, en levering aan klanten. Interne overboekingen tussen eigen magazijnlocaties tellen niet mee omdat die de totale voorraad niet veranderen.</li>
+          <li><b>Mogelijke opbrengst en marge</b> is een waarderingsindicatie, geen prognose: het zegt wat de voorraad zou opbrengen als álles verkocht wordt tegen de prijzen van de afgelopen periode, maar niet wanneer dat gebeurt of óf het gebeurt. Bij posten met jaren dekking (Locator One) is dat een groot verschil. De marge is bovendien vóór verkoopkosten, garantie/uitval en eventuele afwaardering van incourante voorraad; er is nu geen voorziening voor incourantheid in de administratie. De gerealiseerde prijs is een ongewogen gemiddelde over de periode, dus een enkele grote deal met flinke korting trekt 'm mee.</li>
         </ul>
       </div>
 
@@ -1169,11 +1177,17 @@ function renderDetailModal(){
 
   if (key === 'stock_value'){
     const rows = q ? data.filter(d => d.name.toLowerCase().includes(q)) : data;
-    document.getElementById('detail-modal-sub').textContent = rows.length + ' producten op voorraad';
+    const totalMargin = rows.reduce((s,r)=>s+(r.margin_expected||0),0);
+    document.getElementById('detail-modal-sub').textContent =
+      rows.length + ' producten op voorraad · samen ' + fmtEUR0.format(totalMargin) + ' mogelijke marge';
     const cols = [
       {label:'Product', fmt:r=>r.name},
       {label:'Aantal', fmt:r=>r.quantity},
-      {label:'Waarde (€)', fmt:r=>fmtEUR0.format(r.value)},
+      {label:'Kostprijs (€)', fmt:r=>fmtEUR0.format(r.value)},
+      {label:'Verkoopprijs p/st', fmt:r=>stockPriceCell(r)},
+      {label:'Opbrengst (€)', fmt:r=>fmtEUR0.format(r.revenue_expected||0)},
+      {label:'Marge (€)', fmt:r=>fmtEUR0.format(r.margin_expected||0)},
+      {label:'Marge bij catalogusprijs (€)', fmt:r=>fmtEUR0.format(r.margin_list||0)},
     ];
     body.innerHTML = detailTable(cols, rows);
     return;
@@ -1194,6 +1208,19 @@ function renderDetailModal(){
 }
 
 let currentInventoryPayload = null;
+
+// Verkoopprijs per stuk in de voorraadtabel. Maakt zichtbaar wáár het cijfer vandaan
+// komt: een echt gerealiseerde gemiddelde prijs, of (bij gebrek daaraan) de
+// catalogusprijs — dat scheelt nogal in hoe hard de opbrengst eronder is.
+function stockPriceCell(p){
+  if (p.price_source === 'gerealiseerd'){
+    return fmtEUR0.format(p.realized_price);
+  }
+  if (p.price_source === 'catalogus'){
+    return fmtEUR0.format(p.list_price) + ' <span style="color:var(--text-muted);font-size:11px;">cat.</span>';
+  }
+  return '<span style="color:var(--text-muted);">geen prijs</span>';
+}
 
 function renderInventory(payload){
   currentInventoryPayload = payload;
@@ -1217,12 +1244,53 @@ function renderInventory(payload){
   const covText = (cov.months === null || cov.months === undefined) ? 'n.v.t.' : cov.months + ' maanden';
   tiles.appendChild(tile('Voorraadrotatie (dekking)', covText, 'bij gem. kostprijs omzet ' + fmtEUR0.format(cov.avg_monthly_cogs) + '/mnd'));
 
+  // --- Mogelijk te realiseren opbrengst en marge -------------------------
+  // Twee bases naast elkaar: een realistische (gemiddelde prijs waarvoor het artikel de
+  // afgelopen 12 maanden daadwerkelijk is gefactureerd) en het theoretische plafond
+  // (catalogusprijs). Bij Basetime schelen die fors, dus één cijfer zou misleiden.
+  const sv = payload.stock_value;
+  const revTiles = document.getElementById('tiles-stock-revenue');
+  revTiles.innerHTML = '';
+  if (sv.revenue_expected !== undefined){
+    revTiles.appendChild(tile(
+      'Mogelijke opbrengst (realistisch)',
+      fmtEUR0.format(sv.revenue_expected),
+      'tegen de gemiddeld gerealiseerde verkoopprijs · plafond op catalogusprijs: ' + fmtEUR0.format(sv.revenue_list)
+    ));
+    revTiles.appendChild(tile(
+      'Mogelijke marge (realistisch)',
+      fmtEUR0.format(sv.margin_expected),
+      (sv.margin_expected_pct !== null && sv.margin_expected_pct !== undefined ? fmtPct(sv.margin_expected_pct) + ' marge · ' : '')
+        + 'plafond: ' + fmtEUR0.format(sv.margin_list)
+        + (sv.margin_list_pct !== null && sv.margin_list_pct !== undefined ? ' (' + fmtPct(sv.margin_list_pct) + ')' : '')
+    ));
+    revTiles.appendChild(tile(
+      'Kostprijs die erin zit',
+      fmtEUR0.format(sv.total),
+      'dit staat nu in de boeken; het verschil met de opbrengst is de marge die nog te realiseren valt'
+    ));
+
+    const disc = sv.revenue_list ? Math.round((1 - sv.revenue_expected / sv.revenue_list) * 100) : 0;
+    let note = 'De realistische kolom rekent per artikel met de gemiddelde prijs waarvoor het de laatste '
+      + sv.price_basis_months + ' maanden daadwerkelijk is gefactureerd (creditnota\'s eraf). '
+      + 'Dat ligt in de praktijk ' + disc + '% onder de catalogusprijs — die staat er als theoretisch plafond naast. '
+      + 'Dit is een indicatie van wat de voorraad kán opbrengen, geen orderboek: het zegt niets over wanneer het verkocht wordt.';
+    if (sv.fallback_share_pct > 0){
+      note += ' Let op: voor ' + fmtPct(sv.fallback_share_pct) + ' van de voorraadwaarde is geen verkoophistorie beschikbaar; '
+        + 'daar is de catalogusprijs gebruikt (of € 0 als die ook ontbreekt, zoals bij showcase-artikelen).';
+    }
+    document.getElementById('note-stock-revenue').textContent = note;
+  }
+
   document.getElementById('stock-value-heading').textContent = 'Grootste posten naar waarde (top ' + payload.stock_value.by_product.length + ')';
   const svBody = document.querySelector('#stock-value-table tbody');
   svBody.innerHTML = '';
   payload.stock_value.by_product.forEach(p=>{
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td class="name">${p.name}</td><td>${p.quantity}</td><td>${fmtEUR0.format(p.value)}</td>`;
+    tr.innerHTML = `<td class="name">${p.name}</td><td>${p.quantity}</td><td>${fmtEUR0.format(p.value)}</td>`
+      + `<td>${stockPriceCell(p)}</td>`
+      + `<td>${fmtEUR0.format(p.revenue_expected || 0)}</td>`
+      + `<td>${fmtEUR0.format(p.margin_expected || 0)}</td>`;
     svBody.appendChild(tr);
   });
 

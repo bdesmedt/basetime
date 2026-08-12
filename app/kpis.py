@@ -448,26 +448,153 @@ def _fetch_stock_value_by_product(client: OdooClient) -> list[dict]:
     for row in rows:
         pid = row["product_id"][0] if row.get("product_id") else None
         name = row["product_id"][1] if row.get("product_id") else "Onbekend"
-        entry = by_product.setdefault(pid, {"name": name, "quantity": 0.0, "value": 0.0})
+        entry = by_product.setdefault(pid, {"id": pid, "name": name, "quantity": 0.0, "value": 0.0})
         entry["quantity"] += row.get("quantity") or 0
         entry["value"] += row.get("value") or 0
     products = [
-        {"name": p["name"], "quantity": round(p["quantity"], 2), "value": round(p["value"], 2)}
+        {
+            "id": p["id"],
+            "name": p["name"],
+            "quantity": round(p["quantity"], 2),
+            "value": round(p["value"], 2),
+        }
         for p in by_product.values()
     ]
     products.sort(key=lambda p: -p["value"])
     return products
 
 
-def fetch_stock_value(client: OdooClient, top_n: int) -> dict:
+# --- Mogelijk te realiseren opbrengst en marge op de voorraad ---------------
+# De voorraad staat in de boeken tegen kostprijs. Voor sturing is vooral relevant wat
+# er nog uit te halen valt. Dat wordt op twee manieren getoond, omdat het verschil bij
+# Basetime groot is: er wordt structureel ruim onder de catalogusprijs geleverd
+# (Locator One ging over de laatste 12 maanden gemiddeld voor circa 61% van de
+# catalogusprijs weg). Eén cijfer zou dus of te optimistisch of te stellig zijn.
+
+def _fetch_realized_selling_prices(client: OdooClient, months: int) -> dict[int, float]:
+    """Gemiddelde daadwerkelijk gerealiseerde verkoopprijs per artikel, uit de geboekte
+    verkoopfacturen over de laatste `months` maanden (inclusief de lopende maand).
+
+    Creditnota's worden er netto afgehaald: in Odoo staan die met een POSITIEVE
+    hoeveelheid en een POSITIEF price_subtotal op de regel (het teken zit in het
+    move_type, niet in de regel). Simpelweg out_invoice en out_refund bij elkaar
+    optellen zou retouren dus als extra verkopen meetellen — daarom halen we ze hier
+    apart op en trekken we ze van elkaar af."""
+    start = complete_month_windows(months)[0][0]
+    end = current_month_window()[1]
+
+    def totals_by_product(move_type: str) -> dict[int, tuple[float, float]]:
+        rows = client.read_group(
+            "account.move.line",
+            [
+                ["parent_state", "=", "posted"],
+                ["move_id.move_type", "=", move_type],
+                ["display_type", "=", "product"],
+                ["product_id", "!=", False],
+                ["date", ">=", _iso(start)],
+                ["date", "<", _iso(end)],
+            ],
+            ["quantity", "price_subtotal"],
+            ["product_id"],
+        )
+        out: dict[int, tuple[float, float]] = {}
+        for row in rows:
+            if not row.get("product_id"):
+                continue
+            out[row["product_id"][0]] = (
+                row.get("quantity") or 0,
+                row.get("price_subtotal") or 0,
+            )
+        return out
+
+    sold = totals_by_product("out_invoice")
+    credited = totals_by_product("out_refund")
+
+    prices: dict[int, float] = {}
+    for pid, (qty, amount) in sold.items():
+        credit_qty, credit_amount = credited.get(pid, (0.0, 0.0))
+        net_qty = qty - credit_qty
+        net_amount = amount - credit_amount
+        if net_qty > 0 and net_amount > 0:
+            prices[pid] = net_amount / net_qty
+    return prices
+
+
+def _fetch_list_prices(client: OdooClient, product_ids: list[int]) -> dict[int, float]:
+    """De catalogusverkoopprijs (`list_price`) per artikel — het theoretische plafond."""
+    if not product_ids:
+        return {}
+    rows = client.search_read(
+        "product.product", [["id", "in", product_ids]], ["list_price"]
+    )
+    return {row["id"]: row.get("list_price") or 0.0 for row in rows}
+
+
+def _add_revenue_and_margin(products: list[dict], realized: dict[int, float],
+                            list_prices: dict[int, float]) -> None:
+    """Vult per voorraadregel de mogelijke opbrengst en marge aan, op twee bases.
+
+    `expected` = gerealiseerde prijs waar die bekend is, anders de catalogusprijs als
+    terugval (met `price_source` erbij zodat het dashboard eerlijk kan tonen hoeveel
+    van het totaal op welke basis staat). `list` = altijd de catalogusprijs."""
+    for p in products:
+        pid = p.get("id")
+        qty = p.get("quantity") or 0
+        cost = p.get("value") or 0
+        realized_price = realized.get(pid)
+        list_price = list_prices.get(pid, 0.0)
+
+        if realized_price:
+            expected_price, source = realized_price, "gerealiseerd"
+        elif list_price:
+            expected_price, source = list_price, "catalogus"
+        else:
+            expected_price, source = 0.0, "geen"
+
+        p["realized_price"] = round(realized_price, 2) if realized_price else None
+        p["list_price"] = round(list_price, 2)
+        p["price_source"] = source
+        p["revenue_expected"] = round(qty * expected_price, 2)
+        p["revenue_list"] = round(qty * list_price, 2)
+        p["margin_expected"] = round(qty * expected_price - cost, 2)
+        p["margin_list"] = round(qty * list_price - cost, 2)
+
+
+def _stock_value_payload(client: OdooClient, top_n: int | None) -> dict:
     products = _fetch_stock_value_by_product(client)
-    total = round(sum(p["value"] for p in products), 2)
-    return {"total": total, "by_product": products[:top_n]}
+    realized = _fetch_realized_selling_prices(client, config.CONCENTRATION_MONTHS_LOOKBACK)
+    list_prices = _fetch_list_prices(client, [p["id"] for p in products if p.get("id")])
+    _add_revenue_and_margin(products, realized, list_prices)
+
+    total_cost = sum(p["value"] for p in products)
+    total_expected = sum(p["revenue_expected"] for p in products)
+    total_list = sum(p["revenue_list"] for p in products)
+    # hoeveel van de voorraadwaarde leunt op een catalogusprijs (of op niets) in plaats
+    # van op een echt gerealiseerde prijs — dat bepaalt hoe hard het cijfer is
+    fallback_cost = sum(p["value"] for p in products if p["price_source"] != "gerealiseerd")
+
+    return {
+        "total": round(total_cost, 2),
+        "by_product": products if top_n is None else products[:top_n],
+        "revenue_expected": round(total_expected, 2),
+        "revenue_list": round(total_list, 2),
+        "margin_expected": round(total_expected - total_cost, 2),
+        "margin_list": round(total_list - total_cost, 2),
+        "margin_expected_pct": round((total_expected - total_cost) / total_expected * 100, 1) if total_expected else None,
+        "margin_list_pct": round((total_list - total_cost) / total_list * 100, 1) if total_list else None,
+        "price_basis_months": config.CONCENTRATION_MONTHS_LOOKBACK,
+        "fallback_cost_value": round(fallback_cost, 2),
+        "fallback_share_pct": round(fallback_cost / total_cost * 100, 1) if total_cost else 0.0,
+    }
+
+
+def fetch_stock_value(client: OdooClient, top_n: int) -> dict:
+    return _stock_value_payload(client, top_n)
 
 
 def fetch_stock_value_detail(client: OdooClient) -> list[dict]:
     """Niet ingekort tot top-N, voor het doorklikscherm bij voorraadwaarde."""
-    return _fetch_stock_value_by_product(client)
+    return _stock_value_payload(client, None)["by_product"]
 
 
 def _fetch_stock_move_lines(client: OdooClient, start: date, end: date) -> list[dict]:

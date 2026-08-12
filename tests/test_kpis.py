@@ -389,6 +389,8 @@ def test_stock_value_aggregates_quant_lines_per_product_and_sorts_by_value():
     client = FakeOdooClient()
 
     def search_read(model, domain, fields, limit=0, order=None):
+        if model == "product.product":
+            return [{"id": 1, "list_price": 1389.0}, {"id": 23, "list_price": 110.0}]
         assert model == "stock.quant"
         assert ["location_id.usage", "=", "internal"] in domain
         return [
@@ -398,6 +400,7 @@ def test_stock_value_aggregates_quant_lines_per_product_and_sorts_by_value():
         ]
 
     client.search_read = search_read
+    client.read_group = lambda model, domain, fields, groupby: []
     stock = kpis.fetch_stock_value(client, top_n=10)
 
     assert stock["total"] == 2172.0
@@ -410,9 +413,17 @@ def test_stock_value_aggregates_quant_lines_per_product_and_sorts_by_value():
 
 def test_stock_value_detail_is_not_truncated_to_top_n():
     client = FakeOdooClient()
-    client.search_read = lambda model, domain, fields, limit=0, order=None: [
-        {"product_id": [i, f"Product {i}"], "quantity": 1, "value": float(i)} for i in range(1, 15)
-    ]
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        if model == "product.product":
+            return []
+        return [
+            {"product_id": [i, f"Product {i}"], "quantity": 1, "value": float(i)}
+            for i in range(1, 15)
+        ]
+
+    client.search_read = search_read
+    client.read_group = lambda model, domain, fields, groupby: []
     detail = kpis.fetch_stock_value_detail(client)
     assert len(detail) == 14
     assert detail[0]["name"] == "Product 14"  # hoogste waarde eerst
@@ -619,3 +630,103 @@ def test_build_inventory_payload_excludes_current_month_from_coverage(monkeypatc
     assert payload["coverage"]["months"] == 10.0
     assert payload["current_month"]["movements_in"] == 8.0
     assert payload["current_month"]["movements_out"] == 6.0
+
+
+# --- Mogelijke opbrengst/marge op de voorraad --------------------------------
+
+def _stock_client(quants, invoice_rows, refund_rows, list_rows):
+    """Bouwt een FakeOdooClient die de drie aanroepen van _stock_value_payload bedient:
+    stock.quant (search_read), account.move.line (read_group, 2x) en product.product."""
+    client = FakeOdooClient()
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        if model == "product.product":
+            return list_rows
+        return quants
+
+    calls = {"n": 0}
+
+    def read_group(model, domain, fields, groupby):
+        calls["n"] += 1
+        return invoice_rows if calls["n"] == 1 else refund_rows
+
+    client.search_read = search_read
+    client.read_group = read_group
+    return client
+
+
+def test_stock_revenue_uses_realized_price_and_nets_out_credit_notes():
+    """Creditnota's staan in Odoo met een positieve hoeveelheid én een positief
+    price_subtotal op de regel. Zonder aftrek zou de gemiddelde prijs verkeerd
+    uitkomen; deze test dekt precies dat af."""
+    quants = [{"product_id": [1, "HW-101 Locator One"], "quantity": 10, "value": 4210.0}]
+    # 100 verkocht voor 90.000 (= 900 p/st), waarvan 20 gecrediteerd voor 18.000
+    # netto: 80 stuks voor 72.000 => 900 per stuk
+    invoices = [{"product_id": [1, "HW-101 Locator One"], "quantity": 100, "price_subtotal": 90000.0}]
+    refunds = [{"product_id": [1, "HW-101 Locator One"], "quantity": 20, "price_subtotal": 18000.0}]
+    lists = [{"id": 1, "list_price": 1389.0}]
+
+    stock = kpis.fetch_stock_value(_stock_client(quants, invoices, refunds, lists), top_n=10)
+    product = stock["by_product"][0]
+
+    assert product["realized_price"] == 900.0
+    assert product["price_source"] == "gerealiseerd"
+    assert product["revenue_expected"] == 9000.0        # 10 x 900
+    assert product["revenue_list"] == 13890.0           # 10 x 1389 (theoretisch plafond)
+    assert product["margin_expected"] == 4790.0         # 9000 - 4210
+    assert stock["revenue_expected"] == 9000.0
+    assert stock["margin_list"] == 9680.0               # 13890 - 4210
+
+
+def test_stock_revenue_falls_back_to_list_price_without_sales_history():
+    quants = [{"product_id": [5, "AC-101 Beam clamps"], "quantity": 9, "value": 252.0}]
+    lists = [{"id": 5, "list_price": 75.0}]
+
+    stock = kpis.fetch_stock_value(_stock_client(quants, [], [], lists), top_n=10)
+    product = stock["by_product"][0]
+
+    assert product["realized_price"] is None
+    assert product["price_source"] == "catalogus"
+    assert product["revenue_expected"] == 675.0  # 9 x 75, terugval op de catalogusprijs
+    # en dat wordt eerlijk gerapporteerd als "leunt niet op gerealiseerde prijzen"
+    assert stock["fallback_cost_value"] == 252.0
+    assert stock["fallback_share_pct"] == 100.0
+
+
+def test_stock_revenue_is_zero_for_products_without_any_price():
+    """Showcase-/verzamelartikelen zonder verkoopprijs mogen geen opbrengst opleveren;
+    hun kostprijs telt wel gewoon mee, zodat de marge daar eerlijk negatief op uitkomt."""
+    quants = [{"product_id": [370, "HW-105 Locator One DUMMY"], "quantity": 23, "value": 1610.0}]
+    lists = [{"id": 370, "list_price": 0.0}]
+
+    stock = kpis.fetch_stock_value(_stock_client(quants, [], [], lists), top_n=10)
+    product = stock["by_product"][0]
+
+    assert product["price_source"] == "geen"
+    assert product["revenue_expected"] == 0.0
+    assert product["margin_expected"] == -1610.0
+
+
+def test_stock_margin_percentages_use_revenue_as_denominator():
+    quants = [{"product_id": [1, "Product"], "quantity": 10, "value": 400.0}]
+    invoices = [{"product_id": [1, "Product"], "quantity": 10, "price_subtotal": 1000.0}]
+    lists = [{"id": 1, "list_price": 200.0}]
+
+    stock = kpis.fetch_stock_value(_stock_client(quants, invoices, [], lists), top_n=10)
+
+    # verwacht: omzet 1000, kostprijs 400 => marge 600 = 60%
+    assert stock["revenue_expected"] == 1000.0
+    assert stock["margin_expected_pct"] == 60.0
+    # catalogus: 10 x 200 = 2000, marge 1600 = 80%
+    assert stock["margin_list_pct"] == 80.0
+
+
+def test_stock_value_detail_includes_revenue_columns():
+    quants = [{"product_id": [i, f"Product {i}"], "quantity": 2, "value": float(i)} for i in range(1, 15)]
+    lists = [{"id": i, "list_price": 10.0} for i in range(1, 15)]
+
+    detail = kpis.fetch_stock_value_detail(_stock_client(quants, [], [], lists))
+
+    assert len(detail) == 14  # niet ingekort
+    assert detail[0]["revenue_list"] == 20.0
+    assert "margin_expected" in detail[0]
