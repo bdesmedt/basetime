@@ -105,6 +105,9 @@
   .legend .key { display: inline-flex; align-items: center; gap: 5px; }
   .legend .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
   .axis-label { font-size: 10.5px; fill: var(--text-muted); }
+  /* de nog lopende maand: schuin gezet zodat je in de as-labels al ziet dat die
+     kolom een deel-maand is en niet met de volle maanden te vergelijken valt */
+  .axis-label.partial { font-style: italic; }
   .gridline { stroke: var(--gridline); stroke-width: 1; }
   .baseline { stroke: var(--baseline); stroke-width: 1; }
   .data-label { font-size: 10.5px; fill: var(--text-secondary); font-weight: 600; }
@@ -631,7 +634,21 @@ function tile(label, value, sub, delta, values, color, flag){
   return div;
 }
 
-function drawGroupedBar(svgId, labels, seriesA, seriesB, colorA, colorB, fmtValue){
+// --- Lopende maand in de grafieken -----------------------------------------
+// De laatste kolom kan een nog niet afgelopen maand zijn. Die tekenen we half
+// doorzichtig met een gestreepte omlijning, zodat in één oogopslag duidelijk is dat
+// die staaf lager staat omdat de maand nog loopt — niet omdat het slechter gaat.
+function partialBarAttrs(isPartial, color){
+  return isPartial
+    ? ` fill-opacity="0.3" stroke="${color}" stroke-width="1.5" stroke-dasharray="3 2"`
+    : '';
+}
+
+function tipLabel(lab, isPartial){
+  return isPartial ? lab.replace('*','') + ' (loopt nog)' : lab;
+}
+
+function drawGroupedBar(svgId, labels, seriesA, seriesB, colorA, colorB, fmtValue, partialLast){
   const svg = document.getElementById(svgId);
   const W=520,H=220, ML=8, MR=8, MT=14, MB=28;
   const plotW = W-ML-MR, plotH = H-MT-MB;
@@ -649,9 +666,11 @@ function drawGroupedBar(svgId, labels, seriesA, seriesB, colorA, colorB, fmtValu
     const xa = cx - barW - 2, xb = cx + 2;
     const ha = seriesA[i]/maxV*plotH, hb = seriesB[i]/maxV*plotH;
     const ya = MT+plotH-ha, yb = MT+plotH-hb;
-    s += `<rect data-tip="${lab}|Netto-omzet|${fmtValue(seriesA[i])}" x="${xa}" y="${ya}" width="${barW}" height="${ha}" rx="3" fill="${colorA}"/>`;
-    s += `<rect data-tip="${lab}|Kostprijs|${fmtValue(seriesB[i])}" x="${xb}" y="${yb}" width="${barW}" height="${hb}" rx="3" fill="${colorB}"/>`;
-    s += `<text class="axis-label" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+    const isPartial = !!partialLast && i === labels.length-1;
+    const tl = tipLabel(lab, isPartial);
+    s += `<rect data-tip="${tl}|Netto-omzet|${fmtValue(seriesA[i])}" x="${xa}" y="${ya}" width="${barW}" height="${ha}" rx="3" fill="${colorA}"${partialBarAttrs(isPartial, colorA)}/>`;
+    s += `<rect data-tip="${tl}|Kostprijs|${fmtValue(seriesB[i])}" x="${xb}" y="${yb}" width="${barW}" height="${hb}" rx="3" fill="${colorB}"${partialBarAttrs(isPartial, colorB)}/>`;
+    s += `<text class="axis-label${isPartial?' partial':''}" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
   });
   s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${MT+plotH}" y2="${MT+plotH}"/>`;
   s += `</g>`;
@@ -659,7 +678,7 @@ function drawGroupedBar(svgId, labels, seriesA, seriesB, colorA, colorB, fmtValu
   attachTooltips(svg);
 }
 
-function drawBar(svgId, labels, series, color, fmtValue, diverging){
+function drawBar(svgId, labels, series, color, fmtValue, diverging, partialLast){
   const svg = document.getElementById(svgId);
   const W=520,H=220, ML=8, MR=8, MT=14, MB=28;
   const plotW = W-ML-MR, plotH = H-MT-MB;
@@ -680,8 +699,9 @@ function drawBar(svgId, labels, series, color, fmtValue, diverging){
       const h = Math.abs(v)/maxAbs*(plotH/2);
       const y = v>=0 ? zeroY-h : zeroY;
       const c = v>=0 ? css('--series-1') : css('--series-8');
-      s += `<rect data-tip="${lab}|Netto kasstroom|${fmtValue(v)}" x="${cx-barW/2}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${c}"/>`;
-      s += `<text class="axis-label" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+      const isPartial = !!partialLast && i === labels.length-1;
+      s += `<rect data-tip="${tipLabel(lab, isPartial)}|Netto kasstroom|${fmtValue(v)}" x="${cx-barW/2}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${c}"${partialBarAttrs(isPartial, c)}/>`;
+      s += `<text class="axis-label${isPartial?' partial':''}" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
     });
     s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${zeroY}" y2="${zeroY}"/>`;
   } else {
@@ -695,8 +715,9 @@ function drawBar(svgId, labels, series, color, fmtValue, diverging){
       const cx = ML + bandW*i + bandW/2;
       const h = series[i]/maxV*plotH;
       const y = MT+plotH-h;
-      s += `<rect data-tip="${lab}||${fmtValue(series[i])}" x="${cx-barW/2}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${color}"/>`;
-      s += `<text class="axis-label" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+      const isPartial = !!partialLast && i === labels.length-1;
+      s += `<rect data-tip="${tipLabel(lab, isPartial)}||${fmtValue(series[i])}" x="${cx-barW/2}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${color}"${partialBarAttrs(isPartial, color)}/>`;
+      s += `<text class="axis-label${isPartial?' partial':''}" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
     });
     s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${MT+plotH}" y2="${MT+plotH}"/>`;
   }
@@ -705,7 +726,7 @@ function drawBar(svgId, labels, series, color, fmtValue, diverging){
   attachTooltips(svg);
 }
 
-function drawLine(svgId, labels, series, color, fmtValue){
+function drawLine(svgId, labels, series, color, fmtValue, partialLast){
   const svg = document.getElementById(svgId);
   const W=520,H=220, ML=8, MR=8, MT=14, MB=28;
   const plotW = W-ML-MR, plotH = H-MT-MB;
@@ -720,11 +741,20 @@ function drawLine(svgId, labels, series, color, fmtValue){
     s += `<text class="axis-label" x="${ML}" y="${y-3}">${fmtValue(val)}</text>`;
   }
   const pts = series.map((v,i)=>[ML+i*stepX, MT+plotH-(v-minV)/range*plotH]);
-  const path = pts.map((p,i)=>(i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
-  s += `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  // Bij een nog lopende laatste maand: het slotstuk van de lijn gestreept tekenen en
+  // het laatste punt hol laten, zodat het als voorlopig leest.
+  const solidPts = (partialLast && pts.length > 1) ? pts.slice(0, -1) : pts;
+  const solidPath = solidPts.map((p,i)=>(i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  s += `<path d="${solidPath}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  if (partialLast && pts.length > 1){
+    const a = pts[pts.length-2], b = pts[pts.length-1];
+    s += `<path d="M${a[0].toFixed(1)},${a[1].toFixed(1)} L${b[0].toFixed(1)},${b[1].toFixed(1)}" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="4 3" stroke-linecap="round" opacity="0.7"/>`;
+  }
   pts.forEach((p,i)=>{
-    s += `<circle data-tip="${labels[i]}||${fmtValue(series[i])}" cx="${p[0]}" cy="${p[1]}" r="4.5" fill="${color}" stroke="${css('--surface-1')}" stroke-width="2"/>`;
-    s += `<text class="axis-label" x="${p[0]}" y="${H-8}" text-anchor="middle">${labels[i]}</text>`;
+    const isPartial = !!partialLast && i === pts.length-1;
+    const fill = isPartial ? css('--surface-1') : color;
+    s += `<circle data-tip="${tipLabel(labels[i], isPartial)}||${fmtValue(series[i])}" cx="${p[0]}" cy="${p[1]}" r="4.5" fill="${fill}" stroke="${isPartial ? color : css('--surface-1')}" stroke-width="2"/>`;
+    s += `<text class="axis-label${isPartial?' partial':''}" x="${p[0]}" y="${H-8}" text-anchor="middle">${labels[i]}</text>`;
   });
   if (pts.length){
     const lastp = pts[pts.length-1];
@@ -773,7 +803,7 @@ function drawHBar(svgId, data){
   svg.parentElement.appendChild(legend);
 }
 
-function drawMovementsBar(svgId, labels, seriesIn, seriesOut, colorIn, colorOut){
+function drawMovementsBar(svgId, labels, seriesIn, seriesOut, colorIn, colorOut, partialLast){
   const svg = document.getElementById(svgId);
   const W=1080,H=220, ML=40, MR=16, MT=14, MB=28;
   const plotW = W-ML-MR, plotH = H-MT-MB;
@@ -793,9 +823,11 @@ function drawMovementsBar(svgId, labels, seriesIn, seriesOut, colorIn, colorOut)
     const xa = cx - barW - 2, xb = cx + 2;
     const ha = seriesIn[i]/maxV*plotH, hb = seriesOut[i]/maxV*plotH;
     const ya = MT+plotH-ha, yb = MT+plotH-hb;
-    s += `<rect data-tip="${lab}|Ontvangen|${fmtUnits(seriesIn[i])}" x="${xa}" y="${ya}" width="${barW}" height="${ha}" rx="3" fill="${colorIn}"/>`;
-    s += `<rect data-tip="${lab}|Geleverd|${fmtUnits(seriesOut[i])}" x="${xb}" y="${yb}" width="${barW}" height="${hb}" rx="3" fill="${colorOut}"/>`;
-    s += `<text class="axis-label" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+    const isPartial = !!partialLast && i === labels.length-1;
+    const tl = tipLabel(lab, isPartial);
+    s += `<rect data-tip="${tl}|Ontvangen|${fmtUnits(seriesIn[i])}" x="${xa}" y="${ya}" width="${barW}" height="${ha}" rx="3" fill="${colorIn}"${partialBarAttrs(isPartial, colorIn)}/>`;
+    s += `<rect data-tip="${tl}|Geleverd|${fmtUnits(seriesOut[i])}" x="${xb}" y="${yb}" width="${barW}" height="${hb}" rx="3" fill="${colorOut}"${partialBarAttrs(isPartial, colorOut)}/>`;
+    s += `<text class="axis-label${isPartial?' partial':''}" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
   });
   s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${MT+plotH}" y2="${MT+plotH}"/>`;
   s += `</g>`;
@@ -844,6 +876,17 @@ function render(payload){
   }
 
   const labels = payload.window.labels;
+  // De lopende maand wordt achter de volledige maanden geplakt, met een * in het aslabel
+  // en een voetnoot onder elke grafiek. De reeksen in `payload` zelf blijven onaangeroerd,
+  // zodat gemiddelden en break-even op volledige maanden gebaseerd blijven.
+  const cm = payload.current_month;
+  const chartLabels = cm ? labels.concat([cm.label + '*']) : labels;
+  const withCm = (series, value) => cm ? series.concat([value]) : series;
+  const cmNote = cm
+    ? ' * ' + cm.label + ' loopt nog: stand t/m dag ' + cm.day_of_month + ' van ' + cm.days_in_month
+      + ' (' + cm.elapsed_pct + '% van de maand). Die kolom telt niet mee in de gemiddelden hierboven.'
+    : '';
+
   const tilesTop = document.getElementById('tiles-top');
   const tilesBottom = document.getElementById('tiles-bottom');
   tilesTop.innerHTML = ''; tilesBottom.innerHTML = '';
@@ -890,9 +933,12 @@ function render(payload){
 
   const lastIdx = payload.margin_pct.length - 1;
   const lastMonthLabel = labels.length ? labels[labels.length-1] : '';
-  tilesBottom.appendChild(tile('Order intake — ' + lastMonthLabel, fmtEUR0.format(payload.order_intake[payload.order_intake.length-1] || 0), payload.window.label_text + ': ' + fmtEUR0.format(payload.order_intake_sum), null, payload.order_intake, css('--series-1')));
-  tilesBottom.appendChild(tile('Recurring omzet (subscription) — ' + lastMonthLabel, fmtEUR0.format(payload.recurring_revenue[payload.recurring_revenue.length-1] || 0), 'gem. ' + fmtEUR0.format(payload.recurring_revenue_avg) + ' / mnd', null, payload.recurring_revenue, css('--series-3')));
-  tilesBottom.appendChild(tile('Brutomarge — ' + lastMonthLabel, fmtPct(payload.margin_pct[lastIdx]), payload.window.label_text, null, payload.margin_pct, css('--series-1')));
+  // Bij elke maandtegel zetten we de stand van de lopende maand erbij, zodat je de
+  // laatste vólle maand en "waar staan we nu" naast elkaar ziet zonder ze te verwarren.
+  const mtd = (text) => cm ? ' · ' + cm.label + ' t/m nu: ' + text : '';
+  tilesBottom.appendChild(tile('Order intake — ' + lastMonthLabel, fmtEUR0.format(payload.order_intake[payload.order_intake.length-1] || 0), payload.window.label_text + ': ' + fmtEUR0.format(payload.order_intake_sum) + mtd(fmtEUR0.format(cm ? cm.order_intake : 0)), null, payload.order_intake, css('--series-1')));
+  tilesBottom.appendChild(tile('Recurring omzet (subscription) — ' + lastMonthLabel, fmtEUR0.format(payload.recurring_revenue[payload.recurring_revenue.length-1] || 0), 'gem. ' + fmtEUR0.format(payload.recurring_revenue_avg) + ' / mnd' + mtd(fmtEUR0.format(cm ? cm.recurring_revenue : 0)), null, payload.recurring_revenue, css('--series-3')));
+  tilesBottom.appendChild(tile('Brutomarge — ' + lastMonthLabel, fmtPct(payload.margin_pct[lastIdx]), payload.window.label_text + mtd(fmtPct(cm ? cm.margin_pct : 0)), null, payload.margin_pct, css('--series-1')));
 
   const topDeal = payload.pipeline.top_deals[0];
   const topShare = topDeal && payload.pipeline.weighted_total ? Math.round(topDeal.weighted/payload.pipeline.weighted_total*100) : 0;
@@ -950,16 +996,17 @@ function render(payload){
     customersBody.appendChild(tr);
   });
 
-  document.getElementById('note-revcogs').textContent = 'Netto-omzet en kostprijs uit geboekte grootboekmutaties (rekeningtype income / expense_direct_cost), over ' + payload.window.label_text + '. De lopende maand is weggelaten omdat die nooit compleet is.';
+  document.getElementById('note-revcogs').textContent = 'Netto-omzet en kostprijs uit geboekte grootboekmutaties (rekeningtype income / expense_direct_cost), over ' + payload.window.label_text + '.' + cmNote;
   document.getElementById('sub-revcogs').textContent = 'Per maand (€)';
   document.getElementById('sub-margin').textContent = 'Per maand';
   document.getElementById('sub-orders').textContent = 'Per maand (€)';
   document.getElementById('sub-cash').textContent = 'Per maand (€) — boven/onder nul';
 
-  drawGroupedBar('chart-revcogs', labels, payload.revenue, payload.cogs, css('--series-1'), css('--series-2'), (v)=>fmtEUR0.format(v));
-  drawLine('chart-margin', labels, payload.margin_pct, css('--series-1'), (v)=>fmtPct(v));
-  drawBar('chart-orders', labels, payload.order_intake, css('--series-1'), (v)=>fmtEUR0.format(v), false);
-  drawBar('chart-cash', labels, payload.cashflow, null, (v)=>fmtEUR0.format(v), true);
+  const partial = !!cm;
+  drawGroupedBar('chart-revcogs', chartLabels, withCm(payload.revenue, cm && cm.revenue), withCm(payload.cogs, cm && cm.cogs), css('--series-1'), css('--series-2'), (v)=>fmtEUR0.format(v), partial);
+  drawLine('chart-margin', chartLabels, withCm(payload.margin_pct, cm && cm.margin_pct), css('--series-1'), (v)=>fmtPct(v), partial);
+  drawBar('chart-orders', chartLabels, withCm(payload.order_intake, cm && cm.order_intake), css('--series-1'), (v)=>fmtEUR0.format(v), false, partial);
+  drawBar('chart-cash', chartLabels, withCm(payload.cashflow, cm && cm.cashflow), null, (v)=>fmtEUR0.format(v), true, partial);
   drawHBar('chart-pipeline', payload.pipeline.by_stage);
 
   document.getElementById('note-pipeline').textContent = payload.pipeline.opportunity_count + ' open kansen in de CRM-pijplijn (excl. gesloten-won / gesloten-verloren), gewogen met de kans per opportunity uit Odoo.';
@@ -1180,9 +1227,18 @@ function renderInventory(payload){
   });
 
   const labels = payload.window.labels;
+  const cm = payload.current_month;
+  const chartLabels = cm ? labels.concat([cm.label + '*']) : labels;
+  const movIn = cm ? payload.movements.in.concat([cm.movements_in]) : payload.movements.in;
+  const movOut = cm ? payload.movements.out.concat([cm.movements_out]) : payload.movements.out;
+  const cmNote = cm
+    ? ' * ' + cm.label + ' loopt nog: stand t/m dag ' + cm.day_of_month + ' van ' + cm.days_in_month
+      + ' (' + cm.elapsed_pct + '% van de maand). Die kolom telt niet mee in de dekkingsberekening hierboven.'
+    : '';
+
   document.getElementById('sub-movements').textContent = 'Per maand (stuks)';
-  document.getElementById('note-movements').textContent = 'Ontvangen = van leverancier/productie naar interne locatie. Geleverd = van interne locatie naar klant. Over ' + payload.window.label_text + '.';
-  drawMovementsBar('chart-movements', labels, payload.movements.in, payload.movements.out, css('--series-1'), css('--series-2'));
+  document.getElementById('note-movements').textContent = 'Ontvangen = van leverancier/productie naar interne locatie. Geleverd = van interne locatie naar klant. Over ' + payload.window.label_text + '.' + cmNote;
+  drawMovementsBar('chart-movements', chartLabels, movIn, movOut, css('--series-1'), css('--series-2'), !!cm);
 }
 
 async function loadInventoryData(forceRefresh){

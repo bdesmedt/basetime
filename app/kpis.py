@@ -13,7 +13,7 @@ ISO-startdatum van elke groep — dat werkt onafhankelijk van taal/locale.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from . import config
@@ -67,6 +67,32 @@ def complete_month_windows(n: int) -> list[tuple[date, date]]:
         (_add_months(this_month_start, -i), _add_months(this_month_start, -i + 1))
         for i in range(n, 0, -1)
     ]
+
+
+def current_month_window() -> tuple[date, date]:
+    """De LOPENDE maand, van de 1e tot en met vandaag (einddatum exclusief, dus vandaag
+    telt mee). Bewust gescheiden gehouden van complete_month_windows(): deze maand is per
+    definitie onvolledig en hoort daarom niet mee te wegen in gemiddelden, de blended
+    marge of de break-evenvergelijking — die blijven op volledige maanden gebaseerd.
+    Omdat de startdatum de 1e van de maand is, kan dit venster gewoon achter de volledige
+    maanden worden geplakt: alle fetch-functies bucketen per maandbegin en geven er dan
+    één extra element voor terug."""
+    today = date.today()
+    return (date(today.year, today.month, 1), today + timedelta(days=1))
+
+
+def current_month_progress() -> dict:
+    """Hoe ver de lopende maand is gevorderd — zodat het dashboard erbij kan zetten dat
+    een lagere staaf komt doordat de maand nog loopt, en niet doordat het slechter gaat."""
+    today = date.today()
+    month_start = date(today.year, today.month, 1)
+    days_in_month = (_add_months(month_start, 1) - month_start).days
+    return {
+        "label": DUTCH_MONTH_ABBR[today.month],
+        "day_of_month": today.day,
+        "days_in_month": days_in_month,
+        "elapsed_pct": round(today.day / days_in_month * 100),
+    }
 
 
 def _index_by_range_start(rows: list[dict], groupby_field: str) -> dict[str, dict]:
@@ -525,9 +551,18 @@ def build_inventory_payload() -> dict:
     windows = complete_month_windows(config.MONTHS_LOOKBACK)
     month_labels = [DUTCH_MONTH_ABBR[w[0].month] for w in windows]
 
+    # Zelfde aanpak als build_dashboard_payload: de lopende maand rijdt mee in dezelfde
+    # query en wordt daarna afgesplitst, zodat de dekkingsberekening hieronder op
+    # volledige maanden blijft rekenen (een halve maand kostprijs zou de dekking in
+    # maanden anders kunstmatig hoog laten uitvallen).
+    all_windows = windows + [current_month_window()]
+
     stock = fetch_stock_value(client, config.TOP_STOCK_PRODUCTS_N)
-    movements = fetch_stock_movements(client, windows)
-    _, cogs = fetch_revenue_and_cogs(client, windows)
+    movements_all = fetch_stock_movements(client, all_windows)
+    _, cogs_all = fetch_revenue_and_cogs(client, all_windows)
+
+    movements = {"in": movements_all["in"][:-1], "out": movements_all["out"][:-1]}
+    cogs = cogs_all[:-1]
     avg_cogs = sum(cogs) / len(cogs) if cogs else 0
     months_coverage = round(stock["total"] / avg_cogs, 1) if avg_cogs else None
 
@@ -542,6 +577,11 @@ def build_inventory_payload() -> dict:
         "coverage": {
             "months": months_coverage,
             "avg_monthly_cogs": round(avg_cogs, 2),
+        },
+        "current_month": {
+            **current_month_progress(),
+            "movements_in": movements_all["in"][-1],
+            "movements_out": movements_all["out"][-1],
         },
     }
 
@@ -695,6 +735,13 @@ def fetch_purchase_backlog_detail(client: OdooClient) -> list[dict]:
     ]
 
 
+def _detail_windows() -> list[tuple[date, date]]:
+    """Periode voor de doorklikschermen: dezelfde maanden als de grafieken tonen, inclusief
+    de lopende maand — anders zie je in de grafiek wel een staaf voor deze maand staan,
+    maar ontbreken die regels in het bijbehorende detailoverzicht."""
+    return complete_month_windows(config.MONTHS_LOOKBACK) + [current_month_window()]
+
+
 DETAIL_FETCHERS = {
     "aging": lambda client: fetch_ar_ap_aging_detail(client),
     "pipeline": lambda client: fetch_pipeline_detail(client),
@@ -702,13 +749,9 @@ DETAIL_FETCHERS = {
         client, config.CONCENTRATION_MONTHS_LOOKBACK
     ),
     "purchase_backlog": lambda client: fetch_purchase_backlog_detail(client),
-    "order_intake": lambda client: fetch_order_intake_detail(
-        client, complete_month_windows(config.MONTHS_LOOKBACK)
-    ),
+    "order_intake": lambda client: fetch_order_intake_detail(client, _detail_windows()),
     "stock_value": lambda client: fetch_stock_value_detail(client),
-    "stock_movements": lambda client: fetch_stock_movement_detail(
-        client, complete_month_windows(config.MONTHS_LOOKBACK)
-    ),
+    "stock_movements": lambda client: fetch_stock_movement_detail(client, _detail_windows()),
 }
 
 
@@ -728,13 +771,27 @@ def build_dashboard_payload() -> dict:
     windows = complete_month_windows(config.MONTHS_LOOKBACK)
     month_labels = [DUTCH_MONTH_ABBR[w[0].month] for w in windows]
 
-    revenue, cogs = fetch_revenue_and_cogs(client, windows)
+    # De lopende maand wordt in dezelfde Odoo-queries meegenomen (één extra maandbucket,
+    # geen extra query) en daarna er weer afgesplitst, zodat alle bestaande arrays en
+    # afgeleide cijfers hieronder op uitsluitend VOLLEDIGE maanden blijven rekenen.
+    all_windows = windows + [current_month_window()]
+
+    revenue_all, cogs_all = fetch_revenue_and_cogs(client, all_windows)
+    recurring_all = fetch_subscription_revenue(client, all_windows)
+    orders_all = fetch_order_intake(client, all_windows)
+    cashflow_all = fetch_cashflow(client, all_windows)
+
+    revenue, revenue_mtd = revenue_all[:-1], revenue_all[-1]
+    cogs, cogs_mtd = cogs_all[:-1], cogs_all[-1]
+    recurring, recurring_mtd = recurring_all[:-1], recurring_all[-1]
+    orders, orders_mtd = orders_all[:-1], orders_all[-1]
+    cashflow, cashflow_mtd = cashflow_all[:-1], cashflow_all[-1]
+
     margin = [
         round((r - c) / r * 100, 1) if r else 0.0 for r, c in zip(revenue, cogs)
     ]
-    recurring = fetch_subscription_revenue(client, windows)
-    orders = fetch_order_intake(client, windows)
-    cashflow = fetch_cashflow(client, windows)
+    margin_mtd = round((revenue_mtd - cogs_mtd) / revenue_mtd * 100, 1) if revenue_mtd else 0.0
+
     bank_now = fetch_bank_balance_now(client)
     backlog = fetch_purchase_backlog(client)
     pipeline = fetch_pipeline(client, config.TOP_PIPELINE_DEALS, config.TOP_CUSTOMERS_N)
@@ -800,5 +857,16 @@ def build_dashboard_payload() -> dict:
             "based_on_margin_pct": round(blended_margin_fraction * 100, 1),
             "latest_month_revenue": revenue[-1] if revenue else 0.0,
             "gap_to_latest_month": gap_to_latest_month,
+        },
+        # Lopende maand: stand tot en met vandaag. Bewust NIET verwerkt in de arrays en
+        # gemiddelden hierboven — die blijven volledige maanden vergelijken.
+        "current_month": {
+            **current_month_progress(),
+            "revenue": revenue_mtd,
+            "cogs": cogs_mtd,
+            "margin_pct": margin_mtd,
+            "recurring_revenue": recurring_mtd,
+            "order_intake": orders_mtd,
+            "cashflow": cashflow_mtd,
         },
     }

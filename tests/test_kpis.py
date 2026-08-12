@@ -468,3 +468,154 @@ def test_stock_movement_detail_returns_only_in_and_out_sorted_by_date_desc():
     assert len(detail) == 2  # de interne overboeking is uitgesloten
     assert detail[0]["direction"] == "Geleverd"  # latere maand eerst (nieuwste eerst)
     assert detail[1]["direction"] == "Ontvangen"
+
+
+# --- Lopende (onvolledige) maand ---------------------------------------------
+
+def test_current_month_window_starts_first_of_month_and_includes_today():
+    start, end = kpis.current_month_window()
+    today = date.today()
+    assert start == date(today.year, today.month, 1)
+    # einddatum is exclusief; vandaag moet er nog binnen vallen
+    assert end == today + timedelta(days=1)
+    assert start < end
+
+
+def test_current_month_window_directly_follows_the_complete_months():
+    """De lopende maand moet naadloos achter complete_month_windows() passen, want beide
+    lijsten worden aan elkaar geplakt tot één reeks maandbuckets."""
+    windows = kpis.complete_month_windows(3)
+    current_start, _ = kpis.current_month_window()
+    assert windows[-1][1] == current_start
+
+
+def test_current_month_progress_reports_elapsed_days():
+    progress = kpis.current_month_progress()
+    today = date.today()
+    assert progress["day_of_month"] == today.day
+    assert progress["days_in_month"] in (28, 29, 30, 31)
+    assert progress["label"] == kpis.DUTCH_MONTH_ABBR[today.month]
+    assert 0 < progress["elapsed_pct"] <= 100
+
+
+def test_fetchers_return_one_extra_bucket_when_current_month_is_appended():
+    """Kern van de aanpak: de lopende maand rijdt mee in dezelfde query en levert
+    gewoon één extra element op, zodat er geen tweede Odoo-aanroep nodig is."""
+    windows = kpis.complete_month_windows(2)
+    all_windows = windows + [kpis.current_month_window()]
+    june_start, july_start = windows[0][0], windows[1][0]
+    current_start, current_end = all_windows[-1]
+
+    rev_rows = [
+        _fake_group_row("date:month", june_start, july_start, balance=-1000.0),
+        _fake_group_row("date:month", july_start, current_start, balance=-2000.0),
+        _fake_group_row("date:month", current_start, current_end, balance=-500.0),
+    ]
+    client = FakeOdooClient()
+    calls = {"n": 0}
+
+    def read_group(model, domain, fields, groupby):
+        calls["n"] += 1
+        return rev_rows if calls["n"] == 1 else []
+
+    client.read_group = read_group
+    revenue, cogs = kpis.fetch_revenue_and_cogs(client, all_windows)
+
+    assert revenue == [1000.0, 2000.0, 500.0]
+    assert cogs == [0, 0, 0]
+    # slechts twee read_group-aanroepen (omzet + kostprijs), niet vier
+    assert calls["n"] == 2
+
+
+def test_order_intake_buckets_current_month_separately():
+    windows = kpis.complete_month_windows(1)
+    all_windows = windows + [kpis.current_month_window()]
+    complete_start = windows[0][0]
+    current_start = all_windows[-1][0]
+
+    client = FakeOdooClient()
+    client.search_read = lambda model, domain, fields, limit=0, order=None: [
+        {"date_order": f"{complete_start.isoformat()} 10:30:00", "amount_total": 4000.0},
+        {"date_order": f"{current_start.isoformat()} 08:15:00", "amount_total": 1500.0},
+    ]
+    intake = kpis.fetch_order_intake(client, all_windows)
+
+    assert intake == [4000.0, 1500.0]
+
+
+def test_build_dashboard_payload_excludes_current_month_from_averages(monkeypatch):
+    """De belangrijkste garantie van deze feature: een halve lopende maand mag de
+    gemiddelden, de blended marge en de break-evenvergelijking NIET omlaag trekken."""
+    monkeypatch.setattr(kpis, "get_client", lambda: FakeOdooClient())
+    monkeypatch.setattr(kpis, "complete_month_windows", lambda n: [
+        (date(2026, 6, 1), date(2026, 7, 1)),
+        (date(2026, 7, 1), date(2026, 8, 1)),
+    ])
+    monkeypatch.setattr(kpis, "current_month_window", lambda: (date(2026, 8, 1), date(2026, 8, 13)))
+    monkeypatch.setattr(kpis, "current_month_progress", lambda: {
+        "label": "aug", "day_of_month": 12, "days_in_month": 31, "elapsed_pct": 39,
+    })
+
+    # laatste element = lopende maand, telkens bewust veel lager dan een volle maand
+    monkeypatch.setattr(kpis, "fetch_revenue_and_cogs", lambda c, w: ([100000.0, 100000.0, 10000.0],
+                                                                     [40000.0, 40000.0, 9000.0]))
+    monkeypatch.setattr(kpis, "fetch_subscription_revenue", lambda c, w: [30000.0, 30000.0, 3000.0])
+    monkeypatch.setattr(kpis, "fetch_order_intake", lambda c, w: [80000.0, 80000.0, 5000.0])
+    monkeypatch.setattr(kpis, "fetch_cashflow", lambda c, w: [-20000.0, -20000.0, -1000.0])
+    monkeypatch.setattr(kpis, "fetch_bank_balance_now", lambda c: -88872.49)
+    monkeypatch.setattr(kpis, "fetch_purchase_backlog", lambda c: {})
+    monkeypatch.setattr(kpis, "fetch_pipeline", lambda c, a, b: {})
+    monkeypatch.setattr(kpis, "fetch_ar_ap_aging", lambda c, n: {})
+    monkeypatch.setattr(kpis, "fetch_customer_revenue_concentration", lambda c, m, n: {})
+
+    payload = kpis.build_dashboard_payload()
+
+    # de getoonde reeksen bevatten alleen de twee VOLLEDIGE maanden
+    assert payload["revenue"] == [100000.0, 100000.0]
+    assert payload["order_intake"] == [80000.0, 80000.0]
+
+    # gemiddelden op basis van volledige maanden, niet vervuild door de lopende maand
+    assert payload["cashflow_avg"] == -20000.0
+    assert payload["recurring_revenue_avg"] == 30000.0
+    assert payload["order_intake_sum"] == 160000.0
+
+    # blended marge = (200000 - 80000) / 200000 = 60%, niet omlaag getrokken door de
+    # veel slechtere marge van de lopende maand (10%)
+    assert payload["break_even"]["based_on_margin_pct"] == 60.0
+    assert payload["break_even"]["latest_month_revenue"] == 100000.0
+
+    # en de lopende maand staat apart, mét zijn eigen (lagere) cijfers
+    current = payload["current_month"]
+    assert current["label"] == "aug"
+    assert current["day_of_month"] == 12
+    assert current["revenue"] == 10000.0
+    assert current["margin_pct"] == 10.0
+    assert current["order_intake"] == 5000.0
+    assert current["cashflow"] == -1000.0
+
+
+def test_build_inventory_payload_excludes_current_month_from_coverage(monkeypatch):
+    monkeypatch.setattr(kpis, "get_client", lambda: FakeOdooClient())
+    monkeypatch.setattr(kpis, "complete_month_windows", lambda n: [
+        (date(2026, 6, 1), date(2026, 7, 1)),
+        (date(2026, 7, 1), date(2026, 8, 1)),
+    ])
+    monkeypatch.setattr(kpis, "current_month_window", lambda: (date(2026, 8, 1), date(2026, 8, 13)))
+    monkeypatch.setattr(kpis, "current_month_progress", lambda: {
+        "label": "aug", "day_of_month": 12, "days_in_month": 31, "elapsed_pct": 39,
+    })
+    monkeypatch.setattr(kpis, "fetch_stock_value", lambda c, n: {"total": 400000.0, "by_product": []})
+    monkeypatch.setattr(kpis, "fetch_stock_movements", lambda c, w: {
+        "in": [100.0, 120.0, 8.0], "out": [90.0, 110.0, 6.0],
+    })
+    monkeypatch.setattr(kpis, "fetch_revenue_and_cogs", lambda c, w: ([0, 0, 0], [40000.0, 40000.0, 2000.0]))
+
+    payload = kpis.build_inventory_payload()
+
+    assert payload["movements"]["in"] == [100.0, 120.0]
+    assert payload["movements"]["out"] == [90.0, 110.0]
+    # dekking op gemiddelde kostprijs van VOLLEDIGE maanden (40.000), niet 27.333
+    assert payload["coverage"]["avg_monthly_cogs"] == 40000.0
+    assert payload["coverage"]["months"] == 10.0
+    assert payload["current_month"]["movements_in"] == 8.0
+    assert payload["current_month"]["movements_out"] == 6.0
