@@ -88,6 +88,9 @@
   .tile .delta { font-size: 12px; font-weight: 600; margin-top: 3px; }
   .tile .delta.bad { color: var(--status-critical); }
   .tile .delta.good { color: var(--success-text); }
+  /* netto pipelinebeweging: groei groen, krimp rood */
+  td.net-up { color: var(--success-text); font-weight: 600; }
+  td.net-down { color: var(--status-critical); font-weight: 600; }
   .tile svg.spark { position: absolute; right: 10px; bottom: 10px; opacity: 0.9; }
   .tile .flag { position: absolute; top: 10px; right: 10px; font-size: 10px; padding: 2px 6px; border-radius: 10px; font-weight: 700; }
   .flag.warn { background: var(--status-warning); color: #1a1a19; }
@@ -157,6 +160,18 @@
   .tab-btn:hover { color: var(--text-primary); }
   .tab-btn.active { color: var(--text-primary); border-bottom-color: var(--series-1); }
   .tab-meta-row { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  /* periodekiezer */
+  .period-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0 2px;
+                padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; }
+  .period-bar .label { font-size: 12.5px; color: var(--text-muted); font-weight: 600; margin-right: 2px; }
+  .period-btn { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+                color: var(--text-secondary); font-size: 12.5px; padding: 5px 11px; cursor: pointer; }
+  .period-btn:hover { border-color: var(--text-muted); }
+  .period-btn.active { background: var(--series-1); border-color: var(--series-1); color: #fff; font-weight: 600; }
+  .period-bar input[type=date] { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+                color: var(--text-primary); font-size: 12.5px; padding: 4px 8px; font-family: inherit; }
+  .period-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+  .period-current { font-size: 12.5px; color: var(--text-muted); margin-left: auto; }
 
   .snapshot-banner { background: rgba(250,178,25,0.12); border: 1px solid var(--status-warning); border-radius: 8px; padding: 12px 16px; font-size: 13px; color: var(--text-primary); margin-bottom: 18px; }
   .progress-track { background: var(--gridline); border-radius: 6px; height: 10px; overflow: hidden; margin: 10px 0 4px; }
@@ -196,6 +211,24 @@
     <button class="tab-btn" id="tab-btn-actieplan" onclick="switchTab('actieplan')">Actieplan</button>
   </nav>
 
+  <!-- Periodekiezer: snelknoppen voor de gangbare periodes plus een eigen van-tot.
+       De keuze geldt voor het Overzicht- en het Voorraad-tabje; het Actieplan is een
+       momentopname uit de prognose en verandert dus niet mee. -->
+  <div class="period-bar" id="period-bar">
+    <span class="label">Periode</span>
+    <button class="period-btn" id="period-btn-3" onclick="setPeriodMonths(3)">3 mnd</button>
+    <button class="period-btn" id="period-btn-6" onclick="setPeriodMonths(6)">6 mnd</button>
+    <button class="period-btn" id="period-btn-7" onclick="setPeriodMonths(7)">7 mnd</button>
+    <button class="period-btn" id="period-btn-12" onclick="setPeriodMonths(12)">12 mnd</button>
+    <button class="period-btn" id="period-btn-24" onclick="setPeriodMonths(24)">24 mnd</button>
+    <span class="period-sep"></span>
+    <input type="date" id="period-from" aria-label="Van">
+    <span style="font-size:12.5px;color:var(--text-muted);">t/m</span>
+    <input type="date" id="period-to" aria-label="Tot en met">
+    <button class="period-btn" onclick="applyPeriodRange()">Toepassen</button>
+    <span class="period-current" id="period-current"></span>
+  </div>
+
   <div id="tab-overview" class="tab-panel">
 
   <div class="banner error" id="banner-error"></div>
@@ -230,7 +263,7 @@
     </div>
 
     <h2 class="section">Order intake en kasstroom</h2>
-    <p class="section-note">Order intake = bevestigde verkooporders (state = sale) op orderdatum. Kasstroom = mutaties op de hoofd-bankrekening, dus inclusief incidentele inkoopbetalingen en klantontvangsten — geen gladgestreken cijfer.</p>
+    <p class="section-note">Order intake = bevestigde verkooporders (state = sale) op orderdatum, bedragen <b>exclusief btw</b> — dus op dezelfde basis als de omzet hierboven. Kasstroom = mutaties op de hoofd-bankrekening, dus inclusief incidentele inkoopbetalingen en klantontvangsten — geen gladgestreken cijfer.</p>
     <div class="charts">
       <div class="chart-card">
         <div class="heading-row">
@@ -291,6 +324,25 @@
     <div class="charts">
       <div class="chart-card" style="grid-column: 1 / -1;">
         <svg id="chart-pipeline" width="100%" height="230" viewBox="0 0 1080 230" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+    </div>
+
+    <h2 class="section">Beweging in de pijplijn per maand</h2>
+    <p class="section-note" id="note-pipeline-movement"></p>
+    <div class="charts">
+      <div class="chart-card" style="grid-column: 1 / -1;">
+        <div class="heading-row">
+          <h3>Wat er per maand veranderde</h3>
+          <button class="detail-link" onclick="openDetailModal('pipeline_movement')">Bekijk alle bewegingen →</button>
+        </div>
+        <table class="data-table" id="pipeline-movement-table">
+          <thead><tr>
+            <th>Maand</th><th>Open bij aanvang (€)</th>
+            <th>Nieuw</th><th>Vooruit</th><th>Achteruit</th><th>Gewonnen</th><th>Verloren</th>
+            <th>Open aan het eind (€)</th><th>Netto (€)</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </div>
 
@@ -874,6 +926,18 @@ function render(payload){
   const updated = new Date(payload.generated_at);
   document.getElementById('last-updated').textContent = 'Bijgewerkt: ' + updated.toLocaleString('nl-NL');
 
+  // laat expliciet zien welke periode je nu bekijkt — een screenshot moet zonder
+  // context leesbaar zijn
+  const w = payload.window || {};
+  document.getElementById('period-current').textContent =
+    'Nu getoond: ' + (w.label_text || '') + (w.from && w.to ? ' (' + w.from + ' t/m ' + w.to + ')' : '');
+  if (w.mode === 'range'){
+    PERIOD_PRESETS.forEach(m => {
+      const btn = document.getElementById('period-btn-' + m);
+      if (btn) btn.classList.remove('active');
+    });
+  }
+
   const errBanner = document.getElementById('banner-error');
   const warnBanner = document.getElementById('banner-warn');
   errBanner.style.display = 'none';
@@ -1007,7 +1071,7 @@ function render(payload){
   document.getElementById('note-revcogs').textContent = 'Netto-omzet en kostprijs uit geboekte grootboekmutaties (rekeningtype income / expense_direct_cost), over ' + payload.window.label_text + '.' + cmNote;
   document.getElementById('sub-revcogs').textContent = 'Per maand (€)';
   document.getElementById('sub-margin').textContent = 'Per maand';
-  document.getElementById('sub-orders').textContent = 'Per maand (€)';
+  document.getElementById('sub-orders').textContent = 'Per maand (€, excl. btw)';
   document.getElementById('sub-cash').textContent = 'Per maand (€) — boven/onder nul';
 
   const partial = !!cm;
@@ -1021,6 +1085,9 @@ function render(payload){
   if (topDeal){
     document.getElementById('note-concentration').innerHTML = '<b>Gewogen pipeline</b> (' + fmtEUR0.format(payload.pipeline.weighted_total) + ') kan sterk leunen op een klein aantal grote deals. De grootste kans nu — "' + topDeal.name + '" — is alleen al ' + fmtEUR0.format(topDeal.weighted) + ' (' + topShare + '%) van het gewogen totaal.';
   }
+
+  // --- Beweging in de pijplijn -------------------------------------------
+  renderPipelineMovement(payload.pipeline_movement);
 
   const tbody = document.querySelector('#pipeline-table tbody');
   tbody.innerHTML = '';
@@ -1042,6 +1109,7 @@ const DETAIL_TITLES = {
   customer_concentration: 'Alle klanten naar gefactureerde omzet',
   purchase_backlog: 'Alle open inkooporders',
   order_intake: 'Alle bevestigde orders (order intake)',
+  pipeline_movement: 'Alle bewegingen in de pijplijn',
   stock_value: 'Alle producten op voorraad (naar waarde)',
   stock_movements: 'Alle voorraadmutaties',
 };
@@ -1060,7 +1128,7 @@ async function openDetailModal(key){
     return;
   }
   try {
-    const resp = await fetch('/api/details/' + key);
+    const resp = await fetch('/api/details/' + key + periodQuery(false));
     if (!resp.ok){
       const body = await resp.json().catch(()=>({detail: resp.statusText}));
       throw new Error(body.detail || resp.statusText);
@@ -1111,7 +1179,7 @@ function renderDetailModal(){
       {label:'Vervaldatum', fmt:r=>r.due_date||'–'},
       {label:'Dagen te laat', fmt:r=>r.days_overdue===null?'–':r.days_overdue},
       {label:'Categorie', fmt:r=>r.bucket},
-      {label:'Bedrag (€)', fmt:r=>fmtEUR0.format(r.amount)},
+      {label:'Bedrag excl. btw (€)', fmt:r=>fmtEUR0.format(r.amount)},
     ];
     body.innerHTML =
       '<h4 style="margin:10px 0 6px;font-size:12.5px;color:var(--text-primary);">Debiteuren (' + ar.length + ')</h4>' +
@@ -1175,6 +1243,22 @@ function renderDetailModal(){
     return;
   }
 
+  if (key === 'pipeline_movement'){
+    const rows = q ? data.filter(d => (d.name+d.customer+d.category).toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' bewegingen in de periode';
+    const cols = [
+      {label:'Maand', fmt:r=>r.month},
+      {label:'Kans', fmt:r=>r.name},
+      {label:'Klant', fmt:r=>r.customer},
+      {label:'Wat er gebeurde', fmt:r=>r.category},
+      {label:'Van', fmt:r=>r.stage_from},
+      {label:'Naar', fmt:r=>r.stage_to},
+      {label:'Bedrag (€)', fmt:r=>fmtEUR0.format(r.amount)},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+
   if (key === 'stock_value'){
     const rows = q ? data.filter(d => d.name.toLowerCase().includes(q)) : data;
     const totalMargin = rows.reduce((s,r)=>s+(r.margin_expected||0),0);
@@ -1220,6 +1304,50 @@ function stockPriceCell(p){
     return fmtEUR0.format(p.list_price) + ' <span style="color:var(--text-muted);font-size:11px;">cat.</span>';
   }
   return '<span style="color:var(--text-muted);">geen prijs</span>';
+}
+
+// Beweging in de pijplijn: netto standverschil per maand. Bewust niet het aantal
+// fasewijzigingen — daar zit veel correctiewerk in (een kans die binnen een minuut door
+// meerdere fases wordt geklikt), en dat zou activiteit meten in plaats van voortgang.
+function renderPipelineMovement(movement){
+  const tbody = document.querySelector('#pipeline-movement-table tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!movement || !movement.months || !movement.months.length){
+    document.getElementById('note-pipeline-movement').textContent =
+      'Geen wijzigingshistorie beschikbaar voor deze periode.';
+    return;
+  }
+
+  const cell = (bucket) => bucket && bucket.count
+    ? bucket.count + ' · ' + fmtEUR0.format(bucket.value)
+    : '–';
+
+  movement.months.forEach(m => {
+    const b = m.buckets || {};
+    const netClass = m.net_value > 0 ? 'net-up' : (m.net_value < 0 ? 'net-down' : '');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">${m.label}</td>`
+      + `<td>${fmtEUR0.format(m.open_start.value)}</td>`
+      + `<td>${cell(b['nieuw'])}</td>`
+      + `<td>${cell(b['vooruit'])}</td>`
+      + `<td>${cell(b['achteruit'])}</td>`
+      + `<td>${cell(b['gewonnen'])}</td>`
+      + `<td>${cell(b['verloren'])}</td>`
+      + `<td>${fmtEUR0.format(m.open_end.value)}</td>`
+      + `<td class="${netClass}">${(m.net_value > 0 ? '+' : '') + fmtEUR0.format(m.net_value)}</td>`;
+    tbody.appendChild(tr);
+  });
+
+  const totalWon = movement.months.reduce((s,m)=>s+((m.buckets['gewonnen']||{}).count||0),0);
+  const totalLost = movement.months.reduce((s,m)=>s+((m.buckets['verloren']||{}).count||0),0);
+  const winRate = (totalWon + totalLost) ? Math.round(totalWon/(totalWon+totalLost)*100) : null;
+  document.getElementById('note-pipeline-movement').textContent =
+    'Netto standverschil per maand, gereconstrueerd uit de wijzigingshistorie in Odoo: waar stond elke kans '
+    + 'aan het begin van de maand en waar aan het eind. Correcties binnen dezelfde maand vallen zo weg. '
+    + 'Bedragen zijn nominaal (verwachte omzet), niet gewogen — het kanspercentage wordt door Odoo niet '
+    + 'historisch bijgehouden. Over de hele periode: ' + totalWon + ' gewonnen tegen ' + totalLost + ' verloren'
+    + (winRate !== null ? ' (' + winRate + '% winratio)' : '') + '.';
 }
 
 function renderInventory(payload){
@@ -1314,7 +1442,7 @@ async function loadInventoryData(forceRefresh){
     document.getElementById('inventory-skeleton').style.display = 'block';
     document.getElementById('inventory-app').style.display = 'none';
     document.getElementById('inventory-banner-error').style.display = 'none';
-    const resp = await fetch('/api/inventory' + (forceRefresh ? '?refresh=1' : ''));
+    const resp = await fetch('/api/inventory' + periodQuery(forceRefresh));
     if (!resp.ok){
       const body = await resp.json().catch(()=>({detail: resp.statusText}));
       throw new Error(body.detail || resp.statusText);
@@ -1333,7 +1461,8 @@ async function loadInventoryData(forceRefresh){
 
 async function loadData(forceRefresh){
   try{
-    const resp = await fetch('/api/kpis' + (forceRefresh ? '?refresh=1' : ''));
+    document.getElementById('skeleton').style.display = 'block';
+    const resp = await fetch('/api/kpis' + periodQuery(forceRefresh));
     if (!resp.ok){
       const body = await resp.json().catch(()=>({detail: resp.statusText}));
       throw new Error(body.detail || resp.statusText);
@@ -1349,6 +1478,80 @@ async function loadData(forceRefresh){
   }
 }
 
+// --- Periodekeuze ----------------------------------------------------------
+// De keuze wordt in de browser onthouden, zodat je 'm niet elke keer opnieuw hoeft te
+// zetten. Twee vormen: een vast aantal hele maanden, of een eigen van-tot (die op de
+// server wordt afgerond op hele maanden — halve maanden zouden de maandgrafieken en de
+// gemiddelden vertekenen).
+const PERIOD_STORAGE_KEY = 'basetime_periode_v1';
+const PERIOD_PRESETS = [3, 6, 7, 12, 24];
+let currentPeriod = loadPeriod();
+
+function loadPeriod(){
+  try {
+    const stored = JSON.parse(localStorage.getItem(PERIOD_STORAGE_KEY) || 'null');
+    if (stored && (stored.months || (stored.from && stored.to))) return stored;
+  } catch (e) { /* onleesbare opslag: val terug op de standaard */ }
+  return { months: 7 };
+}
+
+function savePeriod(period){
+  try { localStorage.setItem(PERIOD_STORAGE_KEY, JSON.stringify(period)); } catch (e) {}
+}
+
+function periodQuery(forceRefresh){
+  const parts = [];
+  if (forceRefresh) parts.push('refresh=1');
+  if (currentPeriod.months) parts.push('months=' + currentPeriod.months);
+  else if (currentPeriod.from && currentPeriod.to){
+    parts.push('date_from=' + currentPeriod.from);
+    parts.push('date_to=' + currentPeriod.to);
+  }
+  return parts.length ? '?' + parts.join('&') : '';
+}
+
+function syncPeriodControls(){
+  PERIOD_PRESETS.forEach(m => {
+    const btn = document.getElementById('period-btn-' + m);
+    if (btn) btn.classList.toggle('active', currentPeriod.months === m);
+  });
+  if (currentPeriod.from) document.getElementById('period-from').value = currentPeriod.from;
+  if (currentPeriod.to) document.getElementById('period-to').value = currentPeriod.to;
+}
+
+// Na elke periodewissel opnieuw laden. Het Voorraad-tabje alleen als het al eens
+// geopend is — anders halen we data op die niemand bekijkt.
+function reloadForPeriod(){
+  savePeriod(currentPeriod);
+  syncPeriodControls();
+  loadData(false);
+  if (inventoryLoaded) loadInventoryData(false);
+  // de doorklikschermen golden voor de vorige periode, dus die cache moet leeg
+  Object.keys(detailCache).forEach(k => delete detailCache[k]);
+  detailState.rawData = null;
+}
+
+function setPeriodMonths(months){
+  currentPeriod = { months: months };
+  reloadForPeriod();
+}
+
+function applyPeriodRange(){
+  const from = document.getElementById('period-from').value;
+  const to = document.getElementById('period-to').value;
+  if (!from || !to){
+    alert('Vul zowel een begin- als een einddatum in.');
+    return;
+  }
+  if (from > to){
+    alert('De begindatum ligt na de einddatum.');
+    return;
+  }
+  currentPeriod = { from: from, to: to };
+  reloadForPeriod();
+}
+
+syncPeriodControls();
 loadData(false);
 </script>
 </body>

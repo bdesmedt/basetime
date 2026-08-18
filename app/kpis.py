@@ -69,6 +69,83 @@ def complete_month_windows(n: int) -> list[tuple[date, date]]:
     ]
 
 
+def _month_start(d: date) -> date:
+    return date(d.year, d.month, 1)
+
+
+def _months_between(start: date, end_exclusive: date) -> int:
+    """Aantal hele maanden tussen twee maandbeginnen."""
+    return (end_exclusive.year - start.year) * 12 + (end_exclusive.month - start.month)
+
+
+def resolve_windows(
+    months: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> tuple[list[tuple[date, date]], dict]:
+    """Zet een periodekeuze om in een lijst maandvensters plus een beschrijving voor de
+    interface.
+
+    Twee manieren om te kiezen:
+      - `months`: de laatste N volledige maanden (de snelknoppen op het dashboard);
+      - `date_from`/`date_to`: een eigen periode, die wordt AFGEROND OP HELE MAANDEN.
+
+    Dat afronden is bewust: alle maandgrafieken, gemiddelden en de break-evenvergelijking
+    gaan uit van volledige maanden. Een halve maand aan het begin of eind zou dezelfde
+    vertekening geven die we bij de lopende maand juist hebben weggehaald. De lopende
+    maand valt hier dus altijd buiten; die wordt apart opgehaald en apart getoond."""
+    current_start = _month_start(date.today())
+
+    if date_from and date_to:
+        start = _month_start(date_from)
+        # de maand waarin date_to valt telt volledig mee, dus tot de 1e van de maand erna
+        end = _add_months(_month_start(date_to), 1)
+        if end > current_start:
+            end = current_start
+        if start >= end:
+            # periode volledig in de lopende/toekomstige maand: val terug op één maand
+            start = _add_months(end, -1)
+        count = _months_between(start, end)
+        if count > config.MAX_PERIOD_MONTHS:
+            start = _add_months(end, -config.MAX_PERIOD_MONTHS)
+            count = config.MAX_PERIOD_MONTHS
+        windows = [
+            (_add_months(start, i), _add_months(start, i + 1)) for i in range(count)
+        ]
+        meta = {
+            "mode": "range",
+            "months": count,
+            "from": _iso(windows[0][0]),
+            "to": _iso(_add_months(windows[-1][1], 0) - timedelta(days=1)),
+            "label_text": f"{DUTCH_MONTH_ABBR[windows[0][0].month]} {windows[0][0].year}"
+                          f" t/m {DUTCH_MONTH_ABBR[windows[-1][0].month]} {windows[-1][0].year}",
+        }
+    else:
+        count = months or config.MONTHS_LOOKBACK
+        count = max(1, min(count, config.MAX_PERIOD_MONTHS))
+        windows = complete_month_windows(count)
+        meta = {
+            "mode": "months",
+            "months": count,
+            "from": _iso(windows[0][0]),
+            "to": _iso(windows[-1][1] - timedelta(days=1)),
+            "label_text": f"laatste {count} volledige maanden",
+        }
+
+    meta["labels"] = month_labels_for(windows)
+    return windows, meta
+
+
+def month_labels_for(windows: list[tuple[date, date]]) -> list[str]:
+    """Korte maandlabels voor de x-as. Loopt de periode over meerdere kalenderjaren, dan
+    komt het jaartal erbij — anders staat er bij een periode van 24 maanden twee keer
+    'jan' op de as zonder dat je ziet welke welke is."""
+    years = {w[0].year for w in windows}
+    if len(years) > 1:
+        return [f"{DUTCH_MONTH_ABBR[w[0].month]} '{str(w[0].year)[2:]}" for w in windows]
+    return [DUTCH_MONTH_ABBR[w[0].month] for w in windows]
+
+
 def current_month_window() -> tuple[date, date]:
     """De LOPENDE maand, van de 1e tot en met vandaag (einddatum exclusief, dus vandaag
     telt mee). Bewust gescheiden gehouden van complete_month_windows(): deze maand is per
@@ -189,7 +266,7 @@ def fetch_order_intake(client: OdooClient, windows: list[tuple[date, date]]) -> 
             ["date_order", ">=", _iso(start)],
             ["date_order", "<", _iso(end)],
         ],
-        ["date_order", "amount_total"],
+        ["date_order", "amount_untaxed"],
     )
     totals: dict[str, float] = {_iso(mstart): 0.0 for mstart, _ in windows}
     for row in rows:
@@ -199,7 +276,7 @@ def fetch_order_intake(client: OdooClient, windows: list[tuple[date, date]]) -> 
         order_date = datetime.strptime(date_order[:10], "%Y-%m-%d").date()
         month_key = _iso(date(order_date.year, order_date.month, 1))
         if month_key in totals:
-            totals[month_key] += row.get("amount_total") or 0
+            totals[month_key] += row.get("amount_untaxed") or 0
     return [round(totals[_iso(mstart)], 2) for mstart, _ in windows]
 
 
@@ -332,6 +409,260 @@ def fetch_pipeline(client: OdooClient, top_n: int, top_customers_n: int) -> dict
         "by_customer": customers_out,
         "top_customer_share_pct": top_customer_share_pct,
     }
+
+
+# --- Pipelinebeweging: hoe de pijplijn per maand verschuift ------------------
+# Odoo houdt wijzigingen van gevolgde velden bij in `mail.tracking.value` (de chatter).
+# Voor crm.lead worden onder meer de fase en de verwachte omzet gevolgd, met de oude én
+# de nieuwe waarde en het tijdstip. Daarmee is de stand op elk moment in het verleden
+# exact te reconstrueren: begin bij de huidige stand en draai de wijzigingen terug.
+#
+# Bewust NIET het aantal wijzigingen tellen: in de praktijk zit daar veel correctiewerk
+# in (een kans die binnen een minuut door vijf fases wordt geklikt om iets recht te
+# zetten). Door de stand aan het begin en aan het eind van de maand te vergelijken valt
+# dat vanzelf weg.
+
+WON_CATEGORY = "gewonnen"
+LOST_CATEGORY = "verloren"
+MOVEMENT_CATEGORIES = ["nieuw", "vooruit", "achteruit", WON_CATEGORY, LOST_CATEGORY, "heropend"]
+
+
+def _fetch_stage_catalog(client: OdooClient) -> dict[str, dict]:
+    """Fases op naam (kleine letters) → volgorde en of het een gewonnen/verloren fase is.
+
+    Op naam en niet op id, omdat de wijzigingshistorie alleen de fase-NAAM als tekst
+    bewaart. Let op: `Closed lost` heeft in deze administratie een hóger volgnummer dan
+    `Closed won`, dus verloren en gewonnen worden apart afgehandeld en niet op volgorde
+    vergeleken — anders zou een verloren deal als 'vooruitgang' tellen."""
+    rows = client.search_read("crm.stage", [], ["name", "sequence", "is_won"])
+    catalog: dict[str, dict] = {}
+    for row in rows:
+        name = row.get("name") or ""
+        lowered = name.lower()
+        catalog[lowered] = {
+            "name": name,
+            "sequence": row.get("sequence") or 0,
+            "is_won": bool(row.get("is_won")) or "closed won" in lowered,
+            "is_lost": "closed lost" in lowered,
+        }
+    return catalog
+
+
+def _fetch_lead_stage_history(client: OdooClient, since: date) -> dict[int, dict[str, list]]:
+    """Alle gevolgde wijzigingen van fase en verwachte omzet vanaf `since`, gegroepeerd
+    per kans. `mail.tracking.value` verwijst naar een bericht, niet rechtstreeks naar de
+    kans, dus dat koppelen we in een tweede stap via `mail.message.res_id`."""
+    # Eerst de technische veld-id's opzoeken. `field_id` komt in de wijzigingsregels
+    # terug als [id, "Stage (Lead/Opportunity)"] — dus met het LABEL, niet de technische
+    # naam. Raden op basis van welke waardekolom gevuld is gaat mis zodra een fase leeg
+    # was, dus vergelijken we op id.
+    field_rows = client.search_read(
+        "ir.model.fields",
+        [["model", "=", "crm.lead"], ["name", "in", ["stage_id", "expected_revenue"]]],
+        ["name"],
+    )
+    field_kind = {
+        f["id"]: ("stage" if f["name"] == "stage_id" else "revenue") for f in field_rows
+    }
+    if not field_kind:
+        return {}
+
+    rows = client.search_read(
+        "mail.tracking.value",
+        [
+            ["mail_message_id.model", "=", "crm.lead"],
+            ["field_id", "in", list(field_kind)],
+            ["create_date", ">=", _iso(since)],
+        ],
+        [
+            "mail_message_id", "field_id", "create_date",
+            "old_value_char", "new_value_char", "old_value_float", "new_value_float",
+        ],
+    )
+    if not rows:
+        return {}
+
+    message_ids = list({r["mail_message_id"][0] for r in rows if r.get("mail_message_id")})
+    messages = client.search_read(
+        "mail.message", [["id", "in", message_ids]], ["res_id"]
+    )
+    lead_by_message = {m["id"]: m.get("res_id") for m in messages}
+
+    history: dict[int, dict[str, list]] = {}
+    for row in rows:
+        if not row.get("mail_message_id") or not row.get("field_id"):
+            continue
+        lead_id = lead_by_message.get(row["mail_message_id"][0])
+        field = field_kind.get(row["field_id"][0])
+        if not lead_id or not field:
+            continue
+        entry = history.setdefault(lead_id, {"stage": [], "revenue": []})
+        entry[field].append(
+            {
+                "at": row.get("create_date") or "",
+                "old_char": row.get("old_value_char") or "",
+                "new_char": row.get("new_value_char") or "",
+                "old_float": row.get("old_value_float") or 0.0,
+                "new_float": row.get("new_value_float") or 0.0,
+            }
+        )
+    for entry in history.values():
+        entry["stage"].sort(key=lambda c: c["at"])
+        entry["revenue"].sort(key=lambda c: c["at"])
+    return history
+
+
+def _value_at(changes: list[dict], moment: str, current, key_old: str):
+    """De waarde zoals die op `moment` was: de oude waarde van de eerstvolgende wijziging
+    ná dat moment. Is er geen wijziging meer geweest, dan geldt de huidige waarde nog."""
+    for change in changes:
+        if change["at"] >= moment:
+            return change[key_old]
+    return current
+
+
+def _classify_movement(before: dict | None, after: dict | None, catalog: dict[str, dict]) -> str | None:
+    """Bepaalt wat er met één kans in één maand is gebeurd. Gewonnen/verloren gaan vóór
+    alle andere categorieën: een kans die in dezelfde maand binnenkwam én gewonnen werd,
+    telt als gewonnen — dat is hoe je er als verkoopstuurcijfer naar kijkt."""
+    if after is None:
+        return None  # bestond aan het eind van de maand niet (meer)
+
+    after_stage = catalog.get((after["stage"] or "").lower(), {})
+    before_stage = catalog.get(((before or {}).get("stage") or "").lower(), {}) if before else {}
+
+    after_won, after_lost = after_stage.get("is_won"), after_stage.get("is_lost")
+    before_won, before_lost = before_stage.get("is_won"), before_stage.get("is_lost")
+
+    if after_won and not before_won:
+        return WON_CATEGORY
+    if after_lost and not before_lost:
+        return LOST_CATEGORY
+    if before is None:
+        return "nieuw"
+    if (before_won or before_lost) and not (after_won or after_lost):
+        return "heropend"
+    if before["stage"] == after["stage"]:
+        return None  # zelfde fase: geen beweging (waardewijzigingen tellen we apart)
+    if after_stage.get("sequence", 0) > before_stage.get("sequence", 0):
+        return "vooruit"
+    return "achteruit"
+
+
+def _pipeline_states(client: OdooClient, windows: list[tuple[date, date]]):
+    """Reconstrueert per kans de fase en verwachte omzet op elke maandgrens."""
+    catalog = _fetch_stage_catalog(client)
+    leads = client.search_read(
+        "crm.lead",
+        [["type", "=", "opportunity"], ["active", "in", [True, False]]],
+        ["name", "stage_id", "partner_id", "expected_revenue", "create_date"],
+    )
+    history = _fetch_lead_stage_history(client, windows[0][0])
+
+    checkpoints = [_iso(w[0]) for w in windows] + [_iso(windows[-1][1])]
+    states: dict[int, dict[str, dict | None]] = {}
+    meta: dict[int, dict] = {}
+    for lead in leads:
+        lead_id = lead["id"]
+        changes = history.get(lead_id, {"stage": [], "revenue": []})
+        current_stage = lead["stage_id"][1] if lead.get("stage_id") else ""
+        current_revenue = lead.get("expected_revenue") or 0.0
+        created = (lead.get("create_date") or "")[:19]
+        meta[lead_id] = {
+            "name": lead.get("name") or "",
+            "customer": lead["partner_id"][1] if lead.get("partner_id") else "Niet gekoppeld aan klant",
+        }
+        per_checkpoint: dict[str, dict | None] = {}
+        for moment in checkpoints:
+            if created and created >= moment:
+                per_checkpoint[moment] = None  # bestond toen nog niet
+                continue
+            per_checkpoint[moment] = {
+                "stage": _value_at(changes["stage"], moment, current_stage, "old_char"),
+                "revenue": _value_at(changes["revenue"], moment, current_revenue, "old_float"),
+            }
+        states[lead_id] = per_checkpoint
+    return states, meta, catalog, checkpoints
+
+
+def _open_totals(states: dict, moment: str, catalog: dict) -> tuple[int, float]:
+    """Aantal en nominale waarde van de nog OPEN kansen op een moment."""
+    count, value = 0, 0.0
+    for per_checkpoint in states.values():
+        state = per_checkpoint.get(moment)
+        if not state:
+            continue
+        stage = catalog.get((state["stage"] or "").lower(), {})
+        if stage.get("is_won") or stage.get("is_lost"):
+            continue
+        count += 1
+        value += state["revenue"] or 0.0
+    return count, round(value, 2)
+
+
+def fetch_pipeline_movement(client: OdooClient, windows: list[tuple[date, date]]) -> dict:
+    """Per maand: hoe de open pijplijn zich heeft ontwikkeld, uitgesplitst naar nieuw,
+    vooruit, achteruit, gewonnen, verloren en heropend."""
+    states, _meta, catalog, checkpoints = _pipeline_states(client, windows)
+
+    months = []
+    for i, (mstart, mend) in enumerate(windows):
+        before_moment, after_moment = checkpoints[i], checkpoints[i + 1]
+        buckets = {c: {"count": 0, "value": 0.0} for c in MOVEMENT_CATEGORIES}
+        for lead_id, per_checkpoint in states.items():
+            category = _classify_movement(
+                per_checkpoint.get(before_moment), per_checkpoint.get(after_moment), catalog
+            )
+            if not category:
+                continue
+            after = per_checkpoint[after_moment]
+            buckets[category]["count"] += 1
+            buckets[category]["value"] += after["revenue"] or 0.0
+
+        open_start_count, open_start_value = _open_totals(states, before_moment, catalog)
+        open_end_count, open_end_value = _open_totals(states, after_moment, catalog)
+        months.append(
+            {
+                "label": DUTCH_MONTH_ABBR[mstart.month],
+                "month": _iso(mstart),
+                "buckets": {
+                    c: {"count": b["count"], "value": round(b["value"], 2)}
+                    for c, b in buckets.items()
+                },
+                "open_start": {"count": open_start_count, "value": open_start_value},
+                "open_end": {"count": open_end_count, "value": open_end_value},
+                "net_value": round(open_end_value - open_start_value, 2),
+            }
+        )
+    return {"months": months, "categories": MOVEMENT_CATEGORIES}
+
+
+def fetch_pipeline_movement_detail(client: OdooClient, windows: list[tuple[date, date]]) -> list[dict]:
+    """Elke kans die in de periode is bewogen, met maand, categorie en bedrag — voor het
+    doorklikscherm bij de pipelinebeweging."""
+    states, meta, catalog, checkpoints = _pipeline_states(client, windows)
+    rows = []
+    for i, (mstart, _mend) in enumerate(windows):
+        before_moment, after_moment = checkpoints[i], checkpoints[i + 1]
+        for lead_id, per_checkpoint in states.items():
+            before, after = per_checkpoint.get(before_moment), per_checkpoint.get(after_moment)
+            category = _classify_movement(before, after, catalog)
+            if not category:
+                continue
+            rows.append(
+                {
+                    "month": f"{DUTCH_MONTH_ABBR[mstart.month]} {mstart.year}",
+                    "month_key": _iso(mstart),
+                    "name": meta[lead_id]["name"],
+                    "customer": meta[lead_id]["customer"],
+                    "category": category,
+                    "stage_from": (before or {}).get("stage") or "—",
+                    "stage_to": after["stage"] or "—",
+                    "amount": round(after["revenue"] or 0.0, 2),
+                }
+            )
+    rows.sort(key=lambda r: (r["month_key"], -r["amount"]), reverse=True)
+    return rows
 
 
 def fetch_ar_ap_aging(client: OdooClient, top_n: int) -> dict:
@@ -673,23 +1004,31 @@ def fetch_stock_movement_detail(client: OdooClient, windows: list[tuple[date, da
     return detail
 
 
-def build_inventory_payload() -> dict:
+def build_inventory_payload(
+    months: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> dict:
     client = get_client()
-    windows = complete_month_windows(config.MONTHS_LOOKBACK)
-    month_labels = [DUTCH_MONTH_ABBR[w[0].month] for w in windows]
+    windows, period_meta = resolve_windows(months, date_from, date_to)
+    month_labels = period_meta["labels"]
 
     # Zelfde aanpak als build_dashboard_payload: de lopende maand rijdt mee in dezelfde
     # query en wordt daarna afgesplitst, zodat de dekkingsberekening hieronder op
     # volledige maanden blijft rekenen (een halve maand kostprijs zou de dekking in
     # maanden anders kunstmatig hoog laten uitvallen).
-    all_windows = windows + [current_month_window()]
+    all_windows, has_current = windows_including_current_month(windows)
 
     stock = fetch_stock_value(client, config.TOP_STOCK_PRODUCTS_N)
     movements_all = fetch_stock_movements(client, all_windows)
     _, cogs_all = fetch_revenue_and_cogs(client, all_windows)
 
-    movements = {"in": movements_all["in"][:-1], "out": movements_all["out"][:-1]}
-    cogs = cogs_all[:-1]
+    if has_current:
+        movements = {"in": movements_all["in"][:-1], "out": movements_all["out"][:-1]}
+        cogs = cogs_all[:-1]
+    else:
+        movements = {"in": movements_all["in"], "out": movements_all["out"]}
+        cogs = cogs_all
     avg_cogs = sum(cogs) / len(cogs) if cogs else 0
     months_coverage = round(stock["total"] / avg_cogs, 1) if avg_cogs else None
 
@@ -697,7 +1036,10 @@ def build_inventory_payload() -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "window": {
             "labels": month_labels,
-            "label_text": f"laatste {config.MONTHS_LOOKBACK} volledige maanden",
+            "label_text": period_meta["label_text"],
+            "mode": period_meta["mode"],
+            "from": period_meta["from"],
+            "to": period_meta["to"],
         },
         "stock_value": stock,
         "movements": movements,
@@ -709,7 +1051,7 @@ def build_inventory_payload() -> dict:
             **current_month_progress(),
             "movements_in": movements_all["in"][-1],
             "movements_out": movements_all["out"][-1],
-        },
+        } if has_current else None,
     }
 
 
@@ -818,7 +1160,7 @@ def fetch_customer_concentration_detail(client: OdooClient, months: int) -> list
 def fetch_order_intake_detail(client: OdooClient, windows: list[tuple[date, date]]) -> list[dict]:
     """Elke losse bevestigde order binnen de getoonde maanden (niet alleen het totaal per
     maand), voor het doorklikscherm bij order intake. Zelfde selectie/domein als
-    fetch_order_intake."""
+    fetch_order_intake, inclusief het bedrag EXCLUSIEF btw."""
     start, end = windows[0][0], windows[-1][1]
     rows = client.search_read(
         "sale.order",
@@ -827,7 +1169,7 @@ def fetch_order_intake_detail(client: OdooClient, windows: list[tuple[date, date
             ["date_order", ">=", _iso(start)],
             ["date_order", "<", _iso(end)],
         ],
-        ["name", "partner_id", "date_order", "amount_total"],
+        ["name", "partner_id", "date_order", "amount_untaxed"],
     )
     rows.sort(key=lambda r: r.get("date_order") or "", reverse=True)
     return [
@@ -835,7 +1177,7 @@ def fetch_order_intake_detail(client: OdooClient, windows: list[tuple[date, date
             "name": r.get("name") or "",
             "customer": r["partner_id"][1] if r.get("partner_id") else "Onbekend",
             "order_date": (r.get("date_order") or "")[:10] or None,
-            "amount": round(r.get("amount_total") or 0, 2),
+            "amount": round(r.get("amount_untaxed") or 0, 2),
         }
         for r in rows
     ]
@@ -862,67 +1204,101 @@ def fetch_purchase_backlog_detail(client: OdooClient) -> list[dict]:
     ]
 
 
-def _detail_windows() -> list[tuple[date, date]]:
-    """Periode voor de doorklikschermen: dezelfde maanden als de grafieken tonen, inclusief
-    de lopende maand — anders zie je in de grafiek wel een staaf voor deze maand staan,
-    maar ontbreken die regels in het bijbehorende detailoverzicht."""
-    return complete_month_windows(config.MONTHS_LOOKBACK) + [current_month_window()]
+def windows_including_current_month(
+    windows: list[tuple[date, date]]
+) -> tuple[list[tuple[date, date]], bool]:
+    """Plakt de lopende maand achter de gekozen periode — maar alleen als die er direct
+    op aansluit. Kies je een periode in het verleden (bv. nov t/m jan), dan hoort de
+    lopende maand daar niet bij: dat zou een losse staaf van augustus naast januari
+    zetten, met een gat ertussen."""
+    if windows and windows[-1][1] == _month_start(date.today()):
+        return windows + [current_month_window()], True
+    return windows, False
+
+
+def _detail_windows(period: dict | None = None) -> list[tuple[date, date]]:
+    """Periode voor de doorklikschermen: dezelfde maanden als de grafieken tonen,
+    inclusief de lopende maand als die erbij hoort — anders zie je in de grafiek wel een
+    staaf voor deze maand staan, maar ontbreken die regels in het detailoverzicht."""
+    windows, _ = resolve_windows(**(period or {}))
+    return windows_including_current_month(windows)[0]
 
 
 DETAIL_FETCHERS = {
-    "aging": lambda client: fetch_ar_ap_aging_detail(client),
-    "pipeline": lambda client: fetch_pipeline_detail(client),
-    "customer_concentration": lambda client: fetch_customer_concentration_detail(
+    "aging": lambda client, period: fetch_ar_ap_aging_detail(client),
+    "pipeline": lambda client, period: fetch_pipeline_detail(client),
+    "customer_concentration": lambda client, period: fetch_customer_concentration_detail(
         client, config.CONCENTRATION_MONTHS_LOOKBACK
     ),
-    "purchase_backlog": lambda client: fetch_purchase_backlog_detail(client),
-    "order_intake": lambda client: fetch_order_intake_detail(client, _detail_windows()),
-    "stock_value": lambda client: fetch_stock_value_detail(client),
-    "stock_movements": lambda client: fetch_stock_movement_detail(client, _detail_windows()),
+    "purchase_backlog": lambda client, period: fetch_purchase_backlog_detail(client),
+    "order_intake": lambda client, period: fetch_order_intake_detail(
+        client, _detail_windows(period)
+    ),
+    "stock_value": lambda client, period: fetch_stock_value_detail(client),
+    "stock_movements": lambda client, period: fetch_stock_movement_detail(
+        client, _detail_windows(period)
+    ),
+    "pipeline_movement": lambda client, period: fetch_pipeline_movement_detail(
+        client, resolve_windows(**(period or {}))[0]
+    ),
 }
 
 
-def build_detail_payload(key: str) -> Any:
+def build_detail_payload(key: str, period: dict | None = None) -> Any:
     """Volledige (niet-ingekorte) lijst voor het doorklik-detailscherm bij een KPI-sectie.
     Raist KeyError als `key` geen bekende sectie is (main.py zet dat om in een 404)."""
     if key not in DETAIL_FETCHERS:
         raise KeyError(key)
     client = get_client()
-    return DETAIL_FETCHERS[key](client)
+    return DETAIL_FETCHERS[key](client, period)
 
 
 # --- Samenstellen van de complete dashboard-payload -------------------------
 
-def build_dashboard_payload() -> dict:
+def build_dashboard_payload(
+    months: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> dict:
     client = get_client()
-    windows = complete_month_windows(config.MONTHS_LOOKBACK)
-    month_labels = [DUTCH_MONTH_ABBR[w[0].month] for w in windows]
+    windows, period_meta = resolve_windows(months, date_from, date_to)
+    month_labels = period_meta["labels"]
 
     # De lopende maand wordt in dezelfde Odoo-queries meegenomen (één extra maandbucket,
     # geen extra query) en daarna er weer afgesplitst, zodat alle bestaande arrays en
     # afgeleide cijfers hieronder op uitsluitend VOLLEDIGE maanden blijven rekenen.
-    all_windows = windows + [current_month_window()]
+    # Bij een periode in het verleden hoort de lopende maand er niet bij; `has_current`
+    # is dan False en er wordt niets afgesplitst.
+    all_windows, has_current = windows_including_current_month(windows)
 
     revenue_all, cogs_all = fetch_revenue_and_cogs(client, all_windows)
     recurring_all = fetch_subscription_revenue(client, all_windows)
     orders_all = fetch_order_intake(client, all_windows)
     cashflow_all = fetch_cashflow(client, all_windows)
 
-    revenue, revenue_mtd = revenue_all[:-1], revenue_all[-1]
-    cogs, cogs_mtd = cogs_all[:-1], cogs_all[-1]
-    recurring, recurring_mtd = recurring_all[:-1], recurring_all[-1]
-    orders, orders_mtd = orders_all[:-1], orders_all[-1]
-    cashflow, cashflow_mtd = cashflow_all[:-1], cashflow_all[-1]
+    def _split(values: list[float]) -> tuple[list[float], float | None]:
+        return (values[:-1], values[-1]) if has_current else (values, None)
+
+    revenue, revenue_mtd = _split(revenue_all)
+    cogs, cogs_mtd = _split(cogs_all)
+    recurring, recurring_mtd = _split(recurring_all)
+    orders, orders_mtd = _split(orders_all)
+    cashflow, cashflow_mtd = _split(cashflow_all)
 
     margin = [
         round((r - c) / r * 100, 1) if r else 0.0 for r, c in zip(revenue, cogs)
     ]
-    margin_mtd = round((revenue_mtd - cogs_mtd) / revenue_mtd * 100, 1) if revenue_mtd else 0.0
+    margin_mtd = (
+        round((revenue_mtd - cogs_mtd) / revenue_mtd * 100, 1)
+        if has_current and revenue_mtd
+        else 0.0
+    )
 
     bank_now = fetch_bank_balance_now(client)
     backlog = fetch_purchase_backlog(client)
     pipeline = fetch_pipeline(client, config.TOP_PIPELINE_DEALS, config.TOP_CUSTOMERS_N)
     aging = fetch_ar_ap_aging(client, config.TOP_CUSTOMERS_N)
+    pipeline_movement = fetch_pipeline_movement(client, windows)
     customer_concentration = fetch_customer_revenue_concentration(
         client, config.CONCENTRATION_MONTHS_LOOKBACK, config.TOP_CUSTOMERS_N
     )
@@ -952,9 +1328,13 @@ def build_dashboard_payload() -> dict:
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "window": {
-            "months_lookback": config.MONTHS_LOOKBACK,
+            "months_lookback": period_meta["months"],
             "labels": month_labels,
-            "label_text": f"laatste {config.MONTHS_LOOKBACK} volledige maanden",
+            "label_text": period_meta["label_text"],
+            "mode": period_meta["mode"],
+            "from": period_meta["from"],
+            "to": period_meta["to"],
+            "max_months": config.MAX_PERIOD_MONTHS,
         },
         "cash": {
             "available_now": bank_now,
@@ -977,6 +1357,7 @@ def build_dashboard_payload() -> dict:
         "cashflow_avg": avg_cashflow,
         "purchase_backlog": backlog,
         "pipeline": pipeline,
+        "pipeline_movement": pipeline_movement,
         "aging": aging,
         "customer_concentration": customer_concentration,
         "break_even": {
@@ -986,7 +1367,8 @@ def build_dashboard_payload() -> dict:
             "gap_to_latest_month": gap_to_latest_month,
         },
         # Lopende maand: stand tot en met vandaag. Bewust NIET verwerkt in de arrays en
-        # gemiddelden hierboven — die blijven volledige maanden vergelijken.
+        # gemiddelden hierboven — die blijven volledige maanden vergelijken. Bij een
+        # periode in het verleden staat hier None en toont het dashboard 'm niet.
         "current_month": {
             **current_month_progress(),
             "revenue": revenue_mtd,
@@ -995,5 +1377,5 @@ def build_dashboard_payload() -> dict:
             "recurring_revenue": recurring_mtd,
             "order_intake": orders_mtd,
             "cashflow": cashflow_mtd,
-        },
+        } if has_current else None,
     }

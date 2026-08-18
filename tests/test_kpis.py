@@ -115,8 +115,8 @@ def test_order_intake_buckets_by_month_from_datetime_field():
         assert model == "sale.order"
         assert ["state", "=", "sale"] in domain
         return [
-            {"date_order": f"{june_order_date.isoformat()} 09:00:00", "amount_total": 25478.0},
-            {"date_order": f"{july_order_date.isoformat()} 14:30:00", "amount_total": 145051.0},
+            {"date_order": f"{june_order_date.isoformat()} 09:00:00", "amount_untaxed": 25478.0},
+            {"date_order": f"{july_order_date.isoformat()} 14:30:00", "amount_untaxed": 145051.0},
         ]
 
     client.search_read = search_read
@@ -358,9 +358,9 @@ def test_order_intake_detail_returns_every_order_sorted_by_date_desc():
         assert model == "sale.order"
         assert ["state", "=", "sale"] in domain
         return [
-            {"name": "S00010", "partner_id": [1, "Grupoalava"], "date_order": f"{june_start.isoformat()} 09:00:00", "amount_total": 25478.0},
-            {"name": "S00042", "partner_id": [2, "Sixense"], "date_order": f"{july_start.isoformat()} 14:30:00", "amount_total": 145051.0},
-            {"name": "S00099", "partner_id": False, "date_order": f"{july_start.isoformat()} 08:00:00", "amount_total": 500.0},
+            {"name": "S00010", "partner_id": [1, "Grupoalava"], "date_order": f"{june_start.isoformat()} 09:00:00", "amount_untaxed": 25478.0},
+            {"name": "S00042", "partner_id": [2, "Sixense"], "date_order": f"{july_start.isoformat()} 14:30:00", "amount_untaxed": 145051.0},
+            {"name": "S00099", "partner_id": False, "date_order": f"{july_start.isoformat()} 08:00:00", "amount_untaxed": 500.0},
         ]
 
     client.search_read = search_read
@@ -546,8 +546,8 @@ def test_order_intake_buckets_current_month_separately():
 
     client = FakeOdooClient()
     client.search_read = lambda model, domain, fields, limit=0, order=None: [
-        {"date_order": f"{complete_start.isoformat()} 10:30:00", "amount_total": 4000.0},
-        {"date_order": f"{current_start.isoformat()} 08:15:00", "amount_total": 1500.0},
+        {"date_order": f"{complete_start.isoformat()} 10:30:00", "amount_untaxed": 4000.0},
+        {"date_order": f"{current_start.isoformat()} 08:15:00", "amount_untaxed": 1500.0},
     ]
     intake = kpis.fetch_order_intake(client, all_windows)
 
@@ -578,6 +578,7 @@ def test_build_dashboard_payload_excludes_current_month_from_averages(monkeypatc
     monkeypatch.setattr(kpis, "fetch_pipeline", lambda c, a, b: {})
     monkeypatch.setattr(kpis, "fetch_ar_ap_aging", lambda c, n: {})
     monkeypatch.setattr(kpis, "fetch_customer_revenue_concentration", lambda c, m, n: {})
+    monkeypatch.setattr(kpis, "fetch_pipeline_movement", lambda c, w: {"months": [], "categories": []})
 
     payload = kpis.build_dashboard_payload()
 
@@ -730,3 +731,215 @@ def test_stock_value_detail_includes_revenue_columns():
     assert len(detail) == 14  # niet ingekort
     assert detail[0]["revenue_list"] == 20.0
     assert "margin_expected" in detail[0]
+
+
+# --- Periodekeuze ------------------------------------------------------------
+
+def test_resolve_windows_preset_returns_last_n_complete_months():
+    windows, meta = kpis.resolve_windows(months=3)
+    assert len(windows) == 3
+    assert meta["mode"] == "months"
+    assert meta["label_text"] == "laatste 3 volledige maanden"
+    today = date.today()
+    assert windows[-1][1] == date(today.year, today.month, 1)  # lopende maand valt erbuiten
+
+
+def test_resolve_windows_range_snaps_to_whole_months():
+    """Een eigen periode wordt afgerond op hele maanden: alle maandgrafieken en
+    gemiddelden gaan daarvan uit, dus halve maanden zouden opnieuw vertekenen."""
+    windows, meta = kpis.resolve_windows(
+        date_from=date(2025, 11, 10), date_to=date(2026, 4, 20)
+    )
+    assert windows[0][0] == date(2025, 11, 1)   # begint bij de 1e van november
+    assert windows[-1][1] == date(2026, 5, 1)   # april telt volledig mee
+    assert len(windows) == 6
+    assert meta["mode"] == "range"
+    assert meta["label_text"] == "nov 2025 t/m apr 2026"
+
+
+def test_resolve_windows_never_includes_the_running_month():
+    today = date.today()
+    windows, _meta = kpis.resolve_windows(
+        date_from=date(today.year, today.month, 1), date_to=date(today.year + 1, 12, 31)
+    )
+    current_start = date(today.year, today.month, 1)
+    assert all(end <= current_start for _start, end in windows)
+
+
+def test_resolve_windows_caps_at_max_period_months():
+    _windows, meta = kpis.resolve_windows(months=999)
+    assert meta["months"] == kpis.config.MAX_PERIOD_MONTHS
+
+
+def test_month_labels_include_year_when_period_spans_multiple_years():
+    spanning = [(date(2025, 12, 1), date(2026, 1, 1)), (date(2026, 1, 1), date(2026, 2, 1))]
+    assert kpis.month_labels_for(spanning) == ["dec '25", "jan '26"]
+    within = [(date(2026, 1, 1), date(2026, 2, 1)), (date(2026, 2, 1), date(2026, 3, 1))]
+    assert kpis.month_labels_for(within) == ["jan", "feb"]
+
+
+# --- Pipelinebeweging --------------------------------------------------------
+
+STAGE_FIELD_ID, REVENUE_FIELD_ID = 8931, 8935
+
+PIPELINE_STAGES = [
+    {"id": 12, "name": "Unqualified Lead", "sequence": 0, "is_won": False},
+    {"id": 7, "name": "Introduction (10%)", "sequence": 6, "is_won": False},
+    {"id": 17, "name": "Quotation (50%)", "sequence": 9, "is_won": False},
+    {"id": 9, "name": "Negotiation (75%)", "sequence": 10, "is_won": False},
+    {"id": 10, "name": "Closed won (100%)", "sequence": 12, "is_won": True},
+    # let op: verloren heeft een HOGER volgnummer dan gewonnen in deze administratie
+    {"id": 11, "name": "Closed lost (0%)", "sequence": 15, "is_won": False},
+]
+
+
+def _pipeline_client(leads, transitions):
+    """leads: (id, huidige fase, omzet, aanmaakdatum). transitions: (msg_id, lead_id,
+    oude fase, nieuwe fase, tijdstip)."""
+    client = FakeOdooClient()
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        if model == "crm.stage":
+            return PIPELINE_STAGES
+        if model == "ir.model.fields":
+            return [{"id": STAGE_FIELD_ID, "name": "stage_id"},
+                    {"id": REVENUE_FIELD_ID, "name": "expected_revenue"}]
+        if model == "crm.lead":
+            return [
+                {"id": lid, "name": f"Kans {lid}", "stage_id": [0, stage],
+                 "partner_id": False, "expected_revenue": rev, "create_date": created}
+                for lid, stage, rev, created in leads
+            ]
+        if model == "mail.tracking.value":
+            return [
+                {"mail_message_id": [mid, ""], "field_id": [STAGE_FIELD_ID, "Stage"],
+                 "create_date": at, "old_value_char": old, "new_value_char": new,
+                 "old_value_float": 0.0, "new_value_float": 0.0}
+                for mid, _lid, old, new, at in transitions
+            ]
+        if model == "mail.message":
+            return [{"id": mid, "res_id": lid} for mid, lid, _o, _n, _a in transitions]
+        raise AssertionError("onverwacht model: " + model)
+
+    client.search_read = search_read
+    return client
+
+
+JULY = [(date(2026, 7, 1), date(2026, 8, 1))]
+
+
+def test_pipeline_movement_ignores_corrections_within_the_same_month():
+    """Echt waargenomen patroon: op 3 juli werd één kans binnen 90 seconden door zes
+    fases geklikt en kwam uiteindelijk weer terug waar hij begon. Dat is correctiewerk
+    in Odoo, geen pipelinebeweging — het nettoresultaat moet nul zijn."""
+    leads = [(1, "Negotiation (75%)", 50000.0, "2026-01-05 09:00:00")]
+    transitions = [
+        (101, 1, "Negotiation (75%)", "Qualification Stage", "2026-07-03 11:59:22"),
+        (102, 1, "Qualification Stage", "Quotation (50%)", "2026-07-03 11:59:52"),
+        (103, 1, "Quotation (50%)", "Negotiation (75%)", "2026-07-03 12:00:49"),
+    ]
+    movement = kpis.fetch_pipeline_movement(_pipeline_client(leads, transitions), JULY)
+    buckets = movement["months"][0]["buckets"]
+
+    assert all(b["count"] == 0 for b in buckets.values())
+    # en de open pijplijn staat aan begin en eind van de maand even hoog
+    assert movement["months"][0]["open_start"]["value"] == 50000.0
+    assert movement["months"][0]["open_end"]["value"] == 50000.0
+    assert movement["months"][0]["net_value"] == 0.0
+
+
+def test_pipeline_movement_counts_reopened_lost_deal_as_won():
+    """Ook echt gebeurd: een eerder verloren kans die alsnog gewonnen wordt."""
+    leads = [(1, "Closed won (100%)", 4.0, "2026-02-10 15:32:29")]
+    transitions = [(101, 1, "Closed lost (0%)", "Closed won (100%)", "2026-07-06 14:10:27")]
+
+    movement = kpis.fetch_pipeline_movement(_pipeline_client(leads, transitions), JULY)
+    assert movement["months"][0]["buckets"]["gewonnen"]["count"] == 1
+    assert movement["months"][0]["buckets"]["verloren"]["count"] == 0
+
+
+def test_pipeline_movement_counts_lead_created_and_won_in_same_month_as_won():
+    leads = [(1, "Closed won (100%)", 185.0, "2026-07-24 08:41:49")]
+    transitions = [(101, 1, "Unqualified Lead", "Closed won (100%)", "2026-07-24 08:44:44")]
+
+    buckets = kpis.fetch_pipeline_movement(_pipeline_client(leads, transitions), JULY)["months"][0]["buckets"]
+    assert buckets["gewonnen"]["count"] == 1
+    assert buckets["nieuw"]["count"] == 0  # winst gaat vóór 'nieuw'
+
+
+def test_pipeline_movement_does_not_treat_lost_as_progress_despite_higher_sequence():
+    """Closed lost heeft volgnummer 15 en Closed won 12; puur op volgorde vergelijken zou
+    een verloren deal als vooruitgang tellen. Deze test bewaakt dat."""
+    leads = [(1, "Closed lost (0%)", 75000.0, "2026-04-30 11:28:58")]
+    transitions = [(101, 1, "Quotation (50%)", "Closed lost (0%)", "2026-07-09 14:38:18")]
+
+    buckets = kpis.fetch_pipeline_movement(_pipeline_client(leads, transitions), JULY)["months"][0]["buckets"]
+    assert buckets["verloren"]["count"] == 1
+    assert buckets["vooruit"]["count"] == 0
+
+
+def test_pipeline_movement_classifies_forward_and_backward_steps():
+    leads = [
+        (1, "Negotiation (75%)", 10000.0, "2026-01-01 09:00:00"),   # vooruit
+        (2, "Unqualified Lead", 8000.0, "2026-01-01 09:00:00"),     # achteruit
+    ]
+    transitions = [
+        (101, 1, "Introduction (10%)", "Negotiation (75%)", "2026-07-10 09:00:00"),
+        (102, 2, "Quotation (50%)", "Unqualified Lead", "2026-07-11 09:00:00"),
+    ]
+    buckets = kpis.fetch_pipeline_movement(_pipeline_client(leads, transitions), JULY)["months"][0]["buckets"]
+
+    assert buckets["vooruit"]["count"] == 1
+    assert buckets["vooruit"]["value"] == 10000.0
+    assert buckets["achteruit"]["count"] == 1
+    assert buckets["achteruit"]["value"] == 8000.0
+
+
+def test_pipeline_movement_detail_lists_every_moved_opportunity():
+    leads = [
+        (1, "Closed won (100%)", 10000.0, "2026-01-01 09:00:00"),
+        (2, "Quotation (50%)", 5000.0, "2026-01-01 09:00:00"),  # beweegt niet
+    ]
+    transitions = [(101, 1, "Quotation (50%)", "Closed won (100%)", "2026-07-10 09:00:00")]
+
+    detail = kpis.fetch_pipeline_movement_detail(_pipeline_client(leads, transitions), JULY)
+    assert len(detail) == 1
+    assert detail[0]["category"] == "gewonnen"
+    assert detail[0]["stage_from"] == "Quotation (50%)"
+    assert detail[0]["stage_to"] == "Closed won (100%)"
+
+
+def test_current_month_is_only_appended_when_the_period_runs_up_to_now():
+    """Bij een periode in het verleden hoort de lopende maand er niet bij — anders komt
+    er een losse augustusstaaf naast januari te staan, met een gat ertussen."""
+    recent = kpis.complete_month_windows(3)
+    combined, has_current = kpis.windows_including_current_month(recent)
+    assert has_current is True
+    assert len(combined) == 4
+
+    historic = [(date(2025, 11, 1), date(2025, 12, 1)), (date(2025, 12, 1), date(2026, 1, 1))]
+    combined, has_current = kpis.windows_including_current_month(historic)
+    assert has_current is False
+    assert combined == historic
+
+
+def test_build_dashboard_payload_omits_current_month_for_a_historic_period(monkeypatch):
+    monkeypatch.setattr(kpis, "get_client", lambda: FakeOdooClient())
+    monkeypatch.setattr(kpis, "fetch_revenue_and_cogs", lambda c, w: ([100.0] * len(w), [40.0] * len(w)))
+    monkeypatch.setattr(kpis, "fetch_subscription_revenue", lambda c, w: [30.0] * len(w))
+    monkeypatch.setattr(kpis, "fetch_order_intake", lambda c, w: [80.0] * len(w))
+    monkeypatch.setattr(kpis, "fetch_cashflow", lambda c, w: [-20.0] * len(w))
+    monkeypatch.setattr(kpis, "fetch_bank_balance_now", lambda c: 0.0)
+    monkeypatch.setattr(kpis, "fetch_purchase_backlog", lambda c: {})
+    monkeypatch.setattr(kpis, "fetch_pipeline", lambda c, a, b: {})
+    monkeypatch.setattr(kpis, "fetch_ar_ap_aging", lambda c, n: {})
+    monkeypatch.setattr(kpis, "fetch_customer_revenue_concentration", lambda c, m, n: {})
+    monkeypatch.setattr(kpis, "fetch_pipeline_movement", lambda c, w: {"months": [], "categories": []})
+
+    payload = kpis.build_dashboard_payload(
+        date_from=date(2025, 11, 1), date_to=date(2026, 1, 31)
+    )
+
+    assert payload["current_month"] is None
+    assert len(payload["revenue"]) == 3  # nov, dec, jan — geen extra lopende maand
+    assert len(payload["window"]["labels"]) == 3

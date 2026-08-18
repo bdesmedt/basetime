@@ -59,6 +59,10 @@ CACHE_TTL_SECONDS = int(_get_env("CACHE_TTL_SECONDS", "900"))
 # meegenomen in de maandvergelijkingen, omdat die nooit een volledige maand is.
 MONTHS_LOOKBACK = int(_get_env("MONTHS_LOOKBACK", "7"))
 
+# Bovengrens op de periode die via het dashboard te kiezen is. Voorkomt dat iemand per
+# ongeluk tien jaar aan boekingsregels opvraagt en Odoo daarmee onnodig belast.
+MAX_PERIOD_MONTHS = int(_get_env("MAX_PERIOD_MONTHS", "36"))
+
 # Aantal pipeline-deals dat in de "top kansen"-tabel komt.
 TOP_PIPELINE_DEALS = int(_get_env("TOP_PIPELINE_DEALS", "10"))
 

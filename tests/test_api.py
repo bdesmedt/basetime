@@ -7,7 +7,10 @@ import base64
 
 from fastapi.testclient import TestClient
 
-from app import main
+from app import config, main
+
+# cachesleutel voor de standaardperiode (geen expliciete keuze in de URL)
+_DEFAULT_KEY = f"months:{config.MONTHS_LOOKBACK}"
 
 
 def _auth_header(user, password):
@@ -80,8 +83,7 @@ def test_api_kpis_returns_payload_and_uses_cache(monkeypatch):
         return FAKE_PAYLOAD
 
     monkeypatch.setattr(main.kpis, "build_dashboard_payload", fake_build_payload)
-    main._cache["data"] = None
-    main._cache["fetched_at"] = 0.0
+    main._cache.clear()
 
     client = TestClient(main.app)
     headers = _auth_header("testuser", "testpass")
@@ -103,8 +105,9 @@ def test_api_kpis_returns_payload_and_uses_cache(monkeypatch):
 
 
 def test_api_kpis_falls_back_to_stale_data_on_odoo_error(monkeypatch):
-    main._cache["data"] = dict(FAKE_PAYLOAD)
-    main._cache["fetched_at"] = 0.0  # zo oud dat een refresh geforceerd wordt
+    main._cache.clear()
+    # zo oud dat een refresh geforceerd wordt
+    main._cache[_DEFAULT_KEY] = {"data": dict(FAKE_PAYLOAD), "fetched_at": 0.0}
 
     def failing_build_payload():
         raise RuntimeError("Odoo-authenticatie mislukt")
@@ -118,8 +121,7 @@ def test_api_kpis_falls_back_to_stale_data_on_odoo_error(monkeypatch):
 
 
 def test_api_kpis_returns_502_when_no_cache_and_odoo_fails(monkeypatch):
-    main._cache["data"] = None
-    main._cache["fetched_at"] = 0.0
+    main._cache.clear()
 
     def failing_build_payload():
         raise RuntimeError("Odoo-authenticatie mislukt")
@@ -140,10 +142,6 @@ def test_api_details_requires_auth():
 
 
 def test_api_details_returns_404_for_unknown_key(monkeypatch):
-    def fake_build_detail_payload(key):
-        raise KeyError(key)
-
-    monkeypatch.setattr(main.kpis, "build_detail_payload", fake_build_detail_payload)
     client = TestClient(main.app)
     resp = client.get("/api/details/onbekend", headers=_auth_header("testuser", "testpass"))
     assert resp.status_code == 404
@@ -154,13 +152,13 @@ def test_api_details_returns_payload_and_uses_per_key_cache(monkeypatch):
     fake_rows = [{"name": "Deal A", "customer": "Grupoalava", "stage": "Onderhandeling (75%)",
                   "probability": 50.0, "nominal": 1000000.0, "weighted": 500000.0}]
 
-    def fake_build_detail_payload(key):
+    def fake_build_detail_payload(key, period=None):
         call_count["n"] += 1
         assert key == "pipeline"
         return fake_rows
 
     monkeypatch.setattr(main.kpis, "build_detail_payload", fake_build_detail_payload)
-    main._detail_cache.pop("pipeline", None)
+    main._detail_cache.clear()
 
     client = TestClient(main.app)
     headers = _auth_header("testuser", "testpass")
@@ -183,9 +181,10 @@ def test_api_details_returns_payload_and_uses_per_key_cache(monkeypatch):
 
 def test_api_details_falls_back_to_stale_data_on_odoo_error(monkeypatch):
     stale_rows = [{"name": "Oude data"}]
-    main._detail_cache["purchase_backlog"] = {"data": stale_rows, "fetched_at": 0.0}
+    main._detail_cache.clear()
+    main._detail_cache[f"purchase_backlog|{_DEFAULT_KEY}"] = {"data": stale_rows, "fetched_at": 0.0}
 
-    def failing_build_detail_payload(key):
+    def failing_build_detail_payload(key, period=None):
         raise RuntimeError("Odoo-authenticatie mislukt")
 
     monkeypatch.setattr(main.kpis, "build_detail_payload", failing_build_detail_payload)
@@ -220,8 +219,7 @@ def test_api_inventory_returns_payload_and_uses_cache(monkeypatch):
         return FAKE_INVENTORY_PAYLOAD
 
     monkeypatch.setattr(main.kpis, "build_inventory_payload", fake_build_inventory_payload)
-    main._inventory_cache["data"] = None
-    main._inventory_cache["fetched_at"] = 0.0
+    main._inventory_cache.clear()
 
     client = TestClient(main.app)
     headers = _auth_header("testuser", "testpass")
@@ -241,8 +239,8 @@ def test_api_inventory_returns_payload_and_uses_cache(monkeypatch):
 
 
 def test_api_inventory_falls_back_to_stale_data_on_odoo_error(monkeypatch):
-    main._inventory_cache["data"] = dict(FAKE_INVENTORY_PAYLOAD)
-    main._inventory_cache["fetched_at"] = 0.0
+    main._inventory_cache.clear()
+    main._inventory_cache[_DEFAULT_KEY] = {"data": dict(FAKE_INVENTORY_PAYLOAD), "fetched_at": 0.0}
 
     def failing_build_inventory_payload():
         raise RuntimeError("Odoo-authenticatie mislukt")
@@ -255,8 +253,7 @@ def test_api_inventory_falls_back_to_stale_data_on_odoo_error(monkeypatch):
 
 
 def test_api_inventory_returns_502_when_no_cache_and_odoo_fails(monkeypatch):
-    main._inventory_cache["data"] = None
-    main._inventory_cache["fetched_at"] = 0.0
+    main._inventory_cache.clear()
 
     def failing_build_inventory_payload():
         raise RuntimeError("Odoo-authenticatie mislukt")
@@ -265,3 +262,75 @@ def test_api_inventory_returns_502_when_no_cache_and_odoo_fails(monkeypatch):
     client = TestClient(main.app)
     resp = client.get("/api/inventory", headers=_auth_header("testuser", "testpass"))
     assert resp.status_code == 502
+
+
+# --- Periodekeuze op de endpoints -------------------------------------------
+
+def test_api_kpis_caches_per_period(monkeypatch):
+    """Twee verschillende periodes mogen elkaars cijfers niet uit de cache krijgen."""
+    seen = []
+
+    def fake_build_payload(**period):
+        seen.append(period)
+        return FAKE_PAYLOAD
+
+    monkeypatch.setattr(main.kpis, "build_dashboard_payload", fake_build_payload)
+    main._cache.clear()
+
+    client = TestClient(main.app)
+    headers = _auth_header("testuser", "testpass")
+
+    client.get("/api/kpis?months=3", headers=headers)
+    client.get("/api/kpis?months=12", headers=headers)
+    client.get("/api/kpis?months=3", headers=headers)  # opnieuw: nu uit de cache
+
+    assert seen == [{"months": 3}, {"months": 12}]
+
+
+def test_api_kpis_accepts_a_custom_date_range(monkeypatch):
+    seen = []
+
+    def fake_build_payload(**period):
+        seen.append(period)
+        return FAKE_PAYLOAD
+
+    monkeypatch.setattr(main.kpis, "build_dashboard_payload", fake_build_payload)
+    main._cache.clear()
+
+    client = TestClient(main.app)
+    resp = client.get(
+        "/api/kpis?date_from=2025-11-01&date_to=2026-04-30",
+        headers=_auth_header("testuser", "testpass"),
+    )
+    assert resp.status_code == 200
+    assert seen[0]["date_from"].isoformat() == "2025-11-01"
+    assert seen[0]["date_to"].isoformat() == "2026-04-30"
+
+
+def test_api_kpis_rejects_an_unparseable_date():
+    client = TestClient(main.app)
+    resp = client.get(
+        "/api/kpis?date_from=01-11-2025&date_to=2026-04-30",
+        headers=_auth_header("testuser", "testpass"),
+    )
+    assert resp.status_code == 400
+    assert "JJJJ-MM-DD" in resp.json()["detail"]
+
+
+def test_api_details_caches_per_period(monkeypatch):
+    seen = []
+
+    def fake_build_detail_payload(key, period=None):
+        seen.append((key, period))
+        return []
+
+    monkeypatch.setattr(main.kpis, "build_detail_payload", fake_build_detail_payload)
+    main._detail_cache.clear()
+
+    client = TestClient(main.app)
+    headers = _auth_header("testuser", "testpass")
+    client.get("/api/details/order_intake?months=3", headers=headers)
+    client.get("/api/details/order_intake?months=6", headers=headers)
+    client.get("/api/details/order_intake?months=3", headers=headers)
+
+    assert [s[1] for s in seen] == [{"months": 3}, {"months": 6}]
