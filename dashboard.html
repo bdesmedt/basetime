@@ -1,0 +1,1558 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Basetime — KPI-dashboard</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    color: var(--text-primary);
+    background: var(--page-plane);
+    display: block;
+    min-height: 100vh;
+    --surface-1:      #fcfcfb;
+    --page-plane:     #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --success-text:   #006300;
+
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-8: #e34948;
+
+    --seq-100: #cde2fb;
+
+    --status-good: #0ca30c;
+    --status-warning: #fab219;
+    --status-serious: #ec835a;
+    --status-critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page-plane:     #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --success-text:   #0ca30c;
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --series-8: #e66767;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page-plane:     #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --gridline:       #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --success-text:   #0ca30c;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --series-8: #e66767;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--page-plane); color: var(--text-primary); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; }
+
+  header.top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; flex-wrap: wrap; gap: 12px; }
+  h1 { font-size: 22px; font-weight: 650; margin: 0 0 4px; }
+  .subtitle { color: var(--text-secondary); font-size: 13.5px; margin: 0; }
+  .meta { text-align: right; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+  .live-badge { display: inline-flex; align-items: center; gap: 5px; background: var(--status-good); color: #ffffff; font-size: 11px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; margin-bottom: 8px; }
+  .live-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: #fff; }
+  .btn { border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary); font-size: 12px; padding: 5px 10px; border-radius: 6px; cursor: pointer; margin-left: 6px; }
+  .btn:hover { color: var(--text-primary); }
+
+  h2.section { font-size: 14px; font-weight: 650; color: var(--text-primary); margin: 32px 0 12px; }
+  p.section-note { color: var(--text-secondary); font-size: 13px; margin: -6px 0 14px; max-width: 760px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  @media (max-width: 900px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px 12px; position: relative; overflow: hidden; }
+  .tile .label { font-size: 12px; color: var(--text-secondary); margin: 0 0 6px; padding-right: 82px; }
+  .tile .value { font-size: 22px; font-weight: 650; color: var(--text-primary); line-height: 1.15; }
+  .tile .sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
+  .tile .delta { font-size: 12px; font-weight: 600; margin-top: 3px; }
+  .tile .delta.bad { color: var(--status-critical); }
+  .tile .delta.good { color: var(--success-text); }
+  /* netto pipelinebeweging: groei groen, krimp rood */
+  td.net-up { color: var(--success-text); font-weight: 600; }
+  td.net-down { color: var(--status-critical); font-weight: 600; }
+  .tile svg.spark { position: absolute; right: 10px; bottom: 10px; opacity: 0.9; }
+  .tile .flag { position: absolute; top: 10px; right: 10px; font-size: 10px; padding: 2px 6px; border-radius: 10px; font-weight: 700; }
+  .flag.warn { background: var(--status-warning); color: #1a1a19; }
+  .flag.gap { background: var(--status-serious); color: #1a1a19; }
+  .flag.crit { background: var(--status-critical); color: #ffffff; }
+  .flag.ok { background: var(--status-good); color: #ffffff; }
+  .flag.bad { background: var(--status-critical); color: #ffffff; }
+
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 4px; }
+  @media (max-width: 900px) { .charts { grid-template-columns: 1fr; } }
+  .chart-card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px 12px; }
+  .chart-card h3 { font-size: 13px; font-weight: 650; margin: 0 0 2px; }
+  .chart-card .chart-sub { font-size: 11.5px; color: var(--text-muted); margin: 0 0 10px; }
+  .legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--text-secondary); margin-bottom: 8px; }
+  .legend .key { display: inline-flex; align-items: center; gap: 5px; }
+  .legend .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .axis-label { font-size: 10.5px; fill: var(--text-muted); }
+  /* de nog lopende maand: schuin gezet zodat je in de as-labels al ziet dat die
+     kolom een deel-maand is en niet met de volle maanden te vergelijken valt */
+  .axis-label.partial { font-style: italic; }
+  .gridline { stroke: var(--gridline); stroke-width: 1; }
+  .baseline { stroke: var(--baseline); stroke-width: 1; }
+  .data-label { font-size: 10.5px; fill: var(--text-secondary); font-weight: 600; }
+
+  table.data-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.data-table th, table.data-table td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--gridline); }
+  table.data-table th:first-child, table.data-table td:first-child { text-align: left; }
+  table.data-table th { color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .02em; }
+  table.data-table td { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  table.data-table td.name { color: var(--text-primary); }
+
+  .notes { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-top: 8px; }
+  .notes ul { margin: 6px 0 0; padding-left: 18px; }
+  .notes li { font-size: 12.5px; color: var(--text-secondary); margin-bottom: 6px; line-height: 1.5; }
+  .notes li b { color: var(--text-primary); }
+
+  .banner { border-radius: 8px; padding: 12px 16px; font-size: 13px; margin-bottom: 18px; display: none; }
+  .banner.error { background: rgba(208,59,59,0.12); border: 1px solid var(--status-critical); color: var(--text-primary); }
+  .banner.warn { background: rgba(250,178,25,0.12); border: 1px solid var(--status-warning); color: var(--text-primary); }
+  .skeleton { color: var(--text-muted); font-size: 13px; padding: 40px 0; text-align: center; }
+
+  footer { margin-top: 28px; color: var(--text-muted); font-size: 11.5px; text-align: center; }
+
+  #tooltip { position: fixed; pointer-events: none; z-index: 50; display: none; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; color: var(--text-primary); box-shadow: 0 2px 10px rgba(0,0,0,0.15); white-space: nowrap; }
+  #tooltip .tt-label { color: var(--text-muted); font-size: 10.5px; }
+
+  .detail-link { background: none; border: none; color: var(--series-1); font-size: 11.5px; font-weight: 600; cursor: pointer; padding: 0; margin-left: 8px; text-decoration: underline; }
+  .detail-link:hover { color: var(--text-primary); }
+  .heading-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 100; display: none; align-items: center; justify-content: center; padding: 24px; }
+  .modal-overlay.open { display: flex; }
+  .modal-panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; max-width: 900px; width: 100%; max-height: 82vh; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
+  .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 20px 12px; border-bottom: 1px solid var(--border); }
+  .modal-head h3 { margin: 0 0 3px; font-size: 15px; font-weight: 650; color: var(--text-primary); }
+  .modal-head p { margin: 0; font-size: 12px; color: var(--text-muted); }
+  .modal-close { background: none; border: 1px solid var(--border); color: var(--text-secondary); border-radius: 6px; font-size: 13px; padding: 4px 10px; cursor: pointer; flex-shrink: 0; }
+  .modal-close:hover { color: var(--text-primary); }
+  .modal-search { padding: 10px 20px; border-bottom: 1px solid var(--border); }
+  .modal-search input { width: 100%; box-sizing: border-box; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--page-plane); color: var(--text-primary); font-size: 13px; }
+  .modal-body { overflow-y: auto; padding: 4px 20px 18px; }
+  .modal-body table.data-table th { position: sticky; top: 0; background: var(--surface-1); }
+  .modal-state { padding: 30px 0; text-align: center; color: var(--text-muted); font-size: 13px; }
+
+  .tabs { display: flex; gap: 4px; margin: 18px 0 4px; border-bottom: 1px solid var(--border); }
+  .tab-btn { background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-secondary); font-size: 13.5px; font-weight: 600; padding: 8px 4px; margin-right: 18px; cursor: pointer; }
+  .tab-btn:hover { color: var(--text-primary); }
+  .tab-btn.active { color: var(--text-primary); border-bottom-color: var(--series-1); }
+  .tab-meta-row { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  /* periodekiezer */
+  .period-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0 2px;
+                padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; }
+  .period-bar .label { font-size: 12.5px; color: var(--text-muted); font-weight: 600; margin-right: 2px; }
+  .period-btn { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+                color: var(--text-secondary); font-size: 12.5px; padding: 5px 11px; cursor: pointer; }
+  .period-btn:hover { border-color: var(--text-muted); }
+  .period-btn.active { background: var(--series-1); border-color: var(--series-1); color: #fff; font-weight: 600; }
+  .period-bar input[type=date] { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+                color: var(--text-primary); font-size: 12.5px; padding: 4px 8px; font-family: inherit; }
+  .period-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+  .period-current { font-size: 12.5px; color: var(--text-muted); margin-left: auto; }
+
+  .snapshot-banner { background: rgba(250,178,25,0.12); border: 1px solid var(--status-warning); border-radius: 8px; padding: 12px 16px; font-size: 13px; color: var(--text-primary); margin-bottom: 18px; }
+  .progress-track { background: var(--gridline); border-radius: 6px; height: 10px; overflow: hidden; margin: 10px 0 4px; }
+  .progress-fill { background: var(--status-good); height: 100%; border-radius: 6px 0 0 6px; transition: width 0.2s; }
+  .action-list { display: flex; flex-direction: column; gap: 8px; }
+  .action-row { display: flex; align-items: flex-start; gap: 12px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .action-row input[type="checkbox"] { width: 18px; height: 18px; margin-top: 2px; flex-shrink: 0; cursor: pointer; }
+  .action-row .action-main { flex: 1; }
+  .action-row .action-measure { font-size: 13.5px; color: var(--text-primary); font-weight: 600; }
+  .action-row.done .action-measure { text-decoration: line-through; color: var(--text-muted); }
+  .action-row .action-meta { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .action-row .action-effect { font-size: 14px; font-weight: 650; color: var(--text-primary); white-space: nowrap; text-align: right; }
+  .action-row.done .action-effect { color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="viz-root">
+<div id="tooltip"></div>
+<div class="wrap">
+
+  <header class="top">
+    <div>
+      <span class="live-badge"><span class="dot"></span>Live uit Odoo</span>
+      <h1>Basetime B.V. — KPI-dashboard</h1>
+      <p class="subtitle">basetimebv.odoo.com</p>
+    </div>
+    <div class="meta">
+      <span id="last-updated">Laden…</span><br>
+      <button class="btn" onclick="loadData(true)">Vernieuwen</button>
+      <button class="btn" onclick="toggleTheme()">Donker / licht</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" id="tab-btn-overview" onclick="switchTab('overview')">Overzicht</button>
+    <button class="tab-btn" id="tab-btn-voorraad" onclick="switchTab('voorraad')">Voorraad</button>
+    <button class="tab-btn" id="tab-btn-actieplan" onclick="switchTab('actieplan')">Actieplan</button>
+  </nav>
+
+  <!-- Periodekiezer: snelknoppen voor de gangbare periodes plus een eigen van-tot.
+       De keuze geldt voor het Overzicht- en het Voorraad-tabje; het Actieplan is een
+       momentopname uit de prognose en verandert dus niet mee. -->
+  <div class="period-bar" id="period-bar">
+    <span class="label">Periode</span>
+    <button class="period-btn" id="period-btn-3" onclick="setPeriodMonths(3)">3 mnd</button>
+    <button class="period-btn" id="period-btn-6" onclick="setPeriodMonths(6)">6 mnd</button>
+    <button class="period-btn" id="period-btn-7" onclick="setPeriodMonths(7)">7 mnd</button>
+    <button class="period-btn" id="period-btn-12" onclick="setPeriodMonths(12)">12 mnd</button>
+    <button class="period-btn" id="period-btn-24" onclick="setPeriodMonths(24)">24 mnd</button>
+    <span class="period-sep"></span>
+    <input type="date" id="period-from" aria-label="Van">
+    <span style="font-size:12.5px;color:var(--text-muted);">t/m</span>
+    <input type="date" id="period-to" aria-label="Tot en met">
+    <button class="period-btn" onclick="applyPeriodRange()">Toepassen</button>
+    <span class="period-current" id="period-current"></span>
+  </div>
+
+  <div id="tab-overview" class="tab-panel">
+
+  <div class="banner error" id="banner-error"></div>
+  <div class="banner warn" id="banner-warn"></div>
+  <div class="skeleton" id="skeleton">Cijfers ophalen uit Odoo…</div>
+
+  <div id="app" style="display:none">
+
+    <h2 class="section">Kern — vandaag</h2>
+    <div class="tiles" id="tiles-top"></div>
+
+    <h2 class="section">Omzet, marge &amp; pijplijn</h2>
+    <div class="tiles" id="tiles-bottom"></div>
+
+    <h2 class="section">Omzet en kostprijs per maand</h2>
+    <p class="section-note" id="note-revcogs"></p>
+    <div class="charts">
+      <div class="chart-card">
+        <h3>Omzet vs. kostprijs</h3>
+        <p class="chart-sub" id="sub-revcogs"></p>
+        <div class="legend">
+          <span class="key"><span class="swatch" style="background:var(--series-1)"></span>Netto-omzet</span>
+          <span class="key"><span class="swatch" style="background:var(--series-2)"></span>Kostprijs</span>
+        </div>
+        <svg id="chart-revcogs" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+      <div class="chart-card">
+        <h3>Brutomarge %</h3>
+        <p class="chart-sub" id="sub-margin"></p>
+        <svg id="chart-margin" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+    </div>
+
+    <h2 class="section">Order intake en kasstroom</h2>
+    <p class="section-note">Order intake = bevestigde verkooporders (state = sale) op orderdatum, bedragen <b>exclusief btw</b> — dus op dezelfde basis als de omzet hierboven. Kasstroom = mutaties op de hoofd-bankrekening, dus inclusief incidentele inkoopbetalingen en klantontvangsten — geen gladgestreken cijfer.</p>
+    <div class="charts">
+      <div class="chart-card">
+        <div class="heading-row">
+          <h3>Order intake</h3>
+          <button class="detail-link" onclick="openDetailModal('order_intake')">Bekijk alle orders →</button>
+        </div>
+        <p class="chart-sub" id="sub-orders"></p>
+        <svg id="chart-orders" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+      <div class="chart-card">
+        <h3>Netto kasstroom</h3>
+        <p class="chart-sub" id="sub-cash"></p>
+        <svg id="chart-cash" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+    </div>
+
+    <h2 class="section">Cash conversion &amp; klantrisico</h2>
+    <p class="section-note">Ouderdomsanalyse van openstaande posten (op vervaldatum), klantconcentratie in de gefactureerde omzet, en de omzet die maandelijks nodig is om break-even te draaien.</p>
+    <div class="tiles" id="tiles-risk"></div>
+    <div class="charts" style="margin-top:12px;">
+      <div class="chart-card">
+        <h3>Ouderdom debiteuren &amp; crediteuren</h3>
+        <p class="chart-sub" id="sub-aging"></p>
+        <div class="legend">
+          <span class="key"><span class="swatch" style="background:var(--series-1)"></span>Debiteuren (te ontvangen)</span>
+          <span class="key"><span class="swatch" style="background:var(--series-2)"></span>Crediteuren (te betalen)</span>
+        </div>
+        <svg id="chart-aging" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+      <div class="chart-card">
+        <div class="heading-row">
+          <h3 id="top-debtors-heading">Grootste openstaande debiteuren</h3>
+          <button class="detail-link" onclick="openDetailModal('aging')">Bekijk alle openstaande posten →</button>
+        </div>
+        <p class="chart-sub">Op basis van niet-verrekende factuurregels, nu</p>
+        <table class="data-table" id="debtors-table">
+          <thead><tr><th>Klant</th><th>Openstaand (€)</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="charts">
+      <div class="chart-card" style="grid-column: 1 / -1;">
+        <div class="heading-row">
+          <h3 id="top-customers-heading">Grootste klanten naar gefactureerde omzet</h3>
+          <button class="detail-link" onclick="openDetailModal('customer_concentration')">Bekijk alle klanten →</button>
+        </div>
+        <p class="chart-sub" id="sub-customer-concentration"></p>
+        <table class="data-table" id="customers-table">
+          <thead><tr><th>Klant</th><th>Omzet (€)</th><th>Aandeel</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <h2 class="section">Gewogen pipeline per fase</h2>
+    <p class="section-note" id="note-pipeline"></p>
+    <div class="charts">
+      <div class="chart-card" style="grid-column: 1 / -1;">
+        <svg id="chart-pipeline" width="100%" height="230" viewBox="0 0 1080 230" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+    </div>
+
+    <h2 class="section">Beweging in de pijplijn per maand</h2>
+    <p class="section-note" id="note-pipeline-movement"></p>
+    <div class="charts">
+      <div class="chart-card" style="grid-column: 1 / -1;">
+        <div class="heading-row">
+          <h3>Wat er per maand veranderde</h3>
+          <button class="detail-link" onclick="openDetailModal('pipeline_movement')">Bekijk alle bewegingen →</button>
+        </div>
+        <table class="data-table" id="pipeline-movement-table">
+          <thead><tr>
+            <th>Maand</th><th>Open bij aanvang (€)</th>
+            <th>Nieuw</th><th>Vooruit</th><th>Achteruit</th><th>Gewonnen</th><th>Verloren</th>
+            <th>Open aan het eind (€)</th><th>Netto (€)</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="heading-row">
+      <h2 class="section" id="top-deals-heading" style="margin-bottom:0;">Top kansen naar gewogen waarde</h2>
+      <button class="detail-link" onclick="openDetailModal('pipeline')">Bekijk alle open kansen →</button>
+    </div>
+    <div class="chart-card">
+      <table class="data-table" id="pipeline-table">
+        <thead><tr><th>Kans</th><th>Fase</th><th>Kans %</th><th>Nominaal (€)</th><th>Gewogen (€)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="heading-row" style="margin-top:32px;">
+      <h2 class="section" style="margin:0;">Inkoopbacklog</h2>
+      <button class="detail-link" onclick="openDetailModal('purchase_backlog')">Bekijk alle open inkooporders →</button>
+    </div>
+
+    <h2 class="section">Aandachtspunten</h2>
+    <div class="notes">
+      <ul>
+        <li><b>Runway</b> is een vereenvoudigde indicator: (banksaldo + kredietruimte) ÷ vaste maandlasten. De kredietlimiet is geen vast bedrag in Odoo — pas 'm aan bij de tegel "Kredietlimiet" om liquiditeit en runway direct te herberekenen. Voor een volledig scenariomodel met inkoopplanning en debiteuren/crediteurentiming is aanvullende analyse nodig — dit cijfer is een signaal, geen vervanging daarvoor.</li>
+        <li><b>Netto cashburn</b> kan van maand tot maand sterk wisselen door incidentele inkoopbetalingen en klantontvangsten. De vaste maandlasten zijn een stabielere indicator voor structurele burn dan de ruwe bankmutatie.</li>
+        <li><b>Recurring/subscription-omzet</b> toont geboekte omzet op de subscription-rekeningen — dat is herkende omzet, geen vooruitontvangen/deferred-revenue-saldo. Voor een echte deferred-revenue-KPI is verbruiksregistratie per klant nodig.</li>
+        <li><b>Inkoopbacklog</b> is een ruw totaal van alle niet-volledig-gefactureerde inkooporders; verouderde of foutieve openstaande orders zijn hier niet gefilterd.</li>
+        <li id="note-concentration"><b>Gewogen pipeline</b> kan sterk leunen op een klein aantal grote deals — zie de tabel met topkansen voor de concentratie.</li>
+        <li><b>Brutomarge</b> is niet gecorrigeerd voor eventuele boekingsfouten (verkeerde omzetrekening, niet-geboekte kosteloze leveringen, etc.) — controleer bij afwijkingen altijd de onderliggende boekingen.</li>
+        <li><b>Ouderdomsanalyse debiteuren/crediteuren</b> gebruikt de vervaldatum van elke boekingsregel; ontbreekt die, dan valt de regel terug op de boekingsdatum (bucket "Onbekende vervaldatum"). Verrekende/betaalde posten zijn uitgesloten.</li>
+        <li><b>Klantconcentratie</b> kijkt naar gefactureerde omzet (credit notes zijn verrekend), niet naar de gewogen pipeline. De pipeline-concentratie zelf (top klanten in de pijplijn) staat als los cijfer in de API-data (<code>pipeline.top_customer_share_pct</code>) en is nog niet als apart onderdeel op dit dashboard gezet.</li>
+        <li><b>Break-evenomzet</b> gebruikt de blended brutomarge over de getoonde periode en de vaste maandlasten — het houdt geen rekening met eenmalige kosten, seizoenspatronen, of een wijzigende productmix.</li>
+      </ul>
+    </div>
+  </div>
+
+  </div>
+
+  <div id="tab-voorraad" class="tab-panel" style="display:none">
+
+    <div class="tab-meta-row">
+      <span id="inventory-last-updated" style="color:var(--text-muted);font-size:12.5px;"></span>
+      <button class="btn" onclick="loadInventoryData(true)">Vernieuwen</button>
+    </div>
+
+    <div class="banner error" id="inventory-banner-error"></div>
+    <div class="banner warn" id="inventory-banner-warn"></div>
+    <div class="skeleton" id="inventory-skeleton">Voorraadgegevens ophalen uit Odoo…</div>
+
+    <div id="inventory-app" style="display:none">
+
+      <h2 class="section">Voorraad — vandaag</h2>
+      <div class="tiles" id="tiles-inventory"></div>
+
+      <h2 class="section">Wat er nog uit de voorraad te halen valt</h2>
+      <p class="section-note" id="note-stock-revenue"></p>
+      <div class="tiles" id="tiles-stock-revenue"></div>
+
+      <h2 class="section">Voorraadwaarde per product</h2>
+      <p class="section-note">Actuele waarde per artikel in interne locaties (magazijn), op basis van Odoo's eigen voorraadwaardering per stuk (standaard-/gemiddelde kostprijs) — zie de toelichting onderaan over het periodieke voorraadstelsel.</p>
+      <div class="charts">
+        <div class="chart-card" style="grid-column: 1 / -1;">
+          <div class="heading-row">
+            <h3 id="stock-value-heading">Grootste posten naar waarde</h3>
+            <button class="detail-link" onclick="openDetailModal('stock_value')">Bekijk alle producten →</button>
+          </div>
+          <table class="data-table" id="stock-value-table">
+            <thead><tr>
+              <th>Product</th><th>Aantal</th><th>Kostprijs (€)</th>
+              <th>Verkoopprijs p/st</th><th>Opbrengst (€)</th><th>Marge (€)</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <h2 class="section">Voorraadbewegingen per maand</h2>
+      <p class="section-note" id="note-movements"></p>
+      <div class="charts">
+        <div class="chart-card" style="grid-column: 1 / -1;">
+          <div class="heading-row">
+            <h3>Ontvangen vs. geleverd (stuks)</h3>
+            <button class="detail-link" onclick="openDetailModal('stock_movements')">Bekijk alle mutaties →</button>
+          </div>
+          <p class="chart-sub" id="sub-movements"></p>
+          <div class="legend">
+            <span class="key"><span class="swatch" style="background:var(--series-1)"></span>Ontvangen</span>
+            <span class="key"><span class="swatch" style="background:var(--series-2)"></span>Geleverd</span>
+          </div>
+          <svg id="chart-movements" width="100%" height="220" viewBox="0 0 1080 220" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+      </div>
+
+      <h2 class="section">Aandachtspunten voorraad</h2>
+      <div class="notes">
+        <ul>
+          <li><b>Voorraadwaarde</b> komt uit Odoo's eigen voorraadwaardering per artikel (standaard-/gemiddelde kostprijs), niet uit een boekhoudkundige tussenrekening. Basetime gebruikt in Odoo een periodiek voorraadstelsel (zie de afsluitmemo) — dit cijfer is een actuele indicatie voor sturing, geen grootboeksaldo, en sluit dus niet automatisch aan op de balans.</li>
+          <li><b>Voorraadrotatie/dekking</b> = voorraadwaarde nu ÷ gemiddelde kostprijs van de omzet per maand over de getoonde periode — hoeveel maanden verkoop de huidige voorraad dekt bij het huidige tempo, blended over alle producten. Dit verbergt grote verschillen per artikel (sommige posten liggen al 20+ maanden, andere zijn juist bijna op) — voor sturing per inkooporder blijft de eerdere cashflowprognose-analyse relevant.</li>
+          <li><b>Voorraadbewegingen</b> telt alleen mutaties van/naar interne locaties: ontvangst vanaf leverancier/productie, en levering aan klanten. Interne overboekingen tussen eigen magazijnlocaties tellen niet mee omdat die de totale voorraad niet veranderen.</li>
+          <li><b>Mogelijke opbrengst en marge</b> is een waarderingsindicatie, geen prognose: het zegt wat de voorraad zou opbrengen als álles verkocht wordt tegen de prijzen van de afgelopen periode, maar niet wanneer dat gebeurt of óf het gebeurt. Bij posten met jaren dekking (Locator One) is dat een groot verschil. De marge is bovendien vóór verkoopkosten, garantie/uitval en eventuele afwaardering van incourante voorraad; er is nu geen voorziening voor incourantheid in de administratie. De gerealiseerde prijs is een ongewogen gemiddelde over de periode, dus een enkele grote deal met flinke korting trekt 'm mee.</li>
+        </ul>
+      </div>
+
+    </div>
+
+  </div>
+
+  <div id="tab-actieplan" class="tab-panel" style="display:none">
+
+    <div class="snapshot-banner">
+      Momentopname uit de kasstroomprognose van 7 augustus 2026 — dit zijn beslissingen/onderhandelingen, geen live Odoo-cijfer. Vinkjes worden onthouden in deze browser, niet in Odoo of op de server.
+    </div>
+
+    <h2 class="section">Stuurknoppen — cashflowprognose 7 augustus</h2>
+    <p class="section-note">Op 7 augustus was de benodigde storting om de kredietlimiet niet te raken €453.738–604.729, afhankelijk van scenario. Deze maatregelen verkleinen dat gat. Volledige uitwerking in <code>Basetime_cashflow_forecast.xlsx</code>.</p>
+
+    <div class="tiles" style="margin-bottom:18px;">
+      <div class="tile">
+        <p class="label">Resterend financieringsgat (schatting)</p>
+        <div class="value" id="gap-value" style="font-size:22px;">–</div>
+        <p class="sub" id="gap-sub"></p>
+      </div>
+      <div class="tile" style="grid-column: span 3;">
+        <p class="label">Afgevinkt van het vaste effect (excl. de open post "voorraad versneld omzetten")</p>
+        <div class="value" id="actieplan-progress-value" style="font-size:20px;">–</div>
+        <div class="progress-track"><div class="progress-fill" id="actieplan-progress-fill" style="width:0%"></div></div>
+      </div>
+    </div>
+
+    <div class="action-list" id="action-list"></div>
+
+  </div>
+
+  <footer>Basetime B.V. · basetimebv.odoo.com · KPI-dashboard</footer>
+</div>
+
+<div class="modal-overlay" id="detail-modal" onclick="if(event.target===this) closeDetailModal()">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <div>
+        <h3 id="detail-modal-title">Details</h3>
+        <p id="detail-modal-sub"></p>
+      </div>
+      <button class="modal-close" onclick="closeDetailModal()">Sluiten ✕</button>
+    </div>
+    <div class="modal-search">
+      <input type="text" id="detail-modal-search" placeholder="Zoeken op naam…" oninput="filterDetailModal()">
+    </div>
+    <div class="modal-body" id="detail-modal-body">
+      <div class="modal-state">Laden…</div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+// Drempel tegen rechtsklik/devtools — geen echte beveiliging (iedereen met wat
+// technische kennis omzeilt dit via het browsermenu of door JS uit te zetten),
+// puur om casual meekijken/kopiëren iets lastiger te maken.
+document.addEventListener('contextmenu', (e) => e.preventDefault());
+document.addEventListener('keydown', (e) => {
+  const key = (e.key || '').toLowerCase();
+  const blocked =
+    key === 'f12' ||
+    ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'j', 'c'].includes(key)) ||
+    ((e.ctrlKey || e.metaKey) && key === 'u');
+  if (blocked) e.preventDefault();
+});
+
+const fmtEUR0 = new Intl.NumberFormat('nl-NL', {style:'currency', currency:'EUR', maximumFractionDigits:0});
+const fmtEURK = (v) => {
+  const a = Math.abs(v);
+  if (a >= 1000000) return (v/1000000).toFixed(v%1000000===0?0:1).replace('.',',') + 'M';
+  if (a >= 1000) return Math.round(v/1000) + 'K';
+  return Math.round(v).toString();
+};
+const fmtPct = (v) => (v===null||v===undefined) ? '–' : v.toFixed(1).replace('.',',') + '%';
+
+function toggleTheme(){
+  const root = document.documentElement;
+  if (root.getAttribute('data-theme') === 'dark') { root.removeAttribute('data-theme'); }
+  else { root.setAttribute('data-theme','dark'); }
+}
+
+let inventoryLoaded = false;
+
+const TAB_NAMES = ['overview', 'voorraad', 'actieplan'];
+
+function switchTab(name){
+  TAB_NAMES.forEach(n => {
+    document.getElementById('tab-' + n).style.display = (n === name) ? 'block' : 'none';
+    document.getElementById('tab-btn-' + n).classList.toggle('active', n === name);
+  });
+  if (name === 'voorraad' && !inventoryLoaded) loadInventoryData(false);
+  if (name === 'actieplan' && !actieplanRendered) renderActieplan();
+}
+
+let actieplanRendered = false;
+const ACTIEPLAN_STORAGE_KEY = 'basetime_actieplan_v1';
+
+// Bron: cashflow-runway-aug2026-jan2027.md (project "Basetime"), tabel "Stuurknoppen
+// binnen de horizon" — snapshot van 7 augustus 2026, bewust NIET live herberekend
+// (dit zijn beslissingen/onderhandelingen, geen Odoo-cijfer).
+// reducesGap: false betekent dat het effect al verwerkt zit in BASELINE_GAP (de
+// €453.738 van scenario C gaat al uit van uitstel van P00025/P00026 en een gedeeltelijke
+// afroep van P00033 — dat afvinken verandert dus het resterende gat niet, het is al
+// "in" de baseline). Bij de overige vier is het effect nog NIET in die baseline verwerkt
+// — die trekken we er dus wel van af zodra ze zijn afgevinkt.
+const STUURKNOPPEN = [
+  { id: 'p00025', measure: 'Inkooporder P00025 uitstellen of annuleren', effect: 150990, term: 'direct', reducesGap: false },
+  { id: 'p00033', measure: 'P00033 gedeeltelijk afroepen in plaats van 488 st ineens', effect: 147464, term: 'direct', reducesGap: false },
+  { id: 'faber', measure: 'Betalingsregeling met Faber over de openstaande €179.130', effect: 179130, term: 'direct', reducesGap: true },
+  { id: 'mgmtfee', measure: 'Managementfee tijdelijk opschorten of achterstellen', effect: 105000, term: 'direct', reducesGap: true },
+  { id: 'ontwikkelkosten', measure: 'Ontwikkelkosten tijdelijk terugbrengen', effect: 47139, term: 'binnen een maand', reducesGap: true },
+  { id: 'sodaq', measure: 'SODAQ-schuld uit 2023/2024 afwikkelen', effect: 43893, term: 'nader te bepalen', reducesGap: true },
+  { id: 'voorraad_facturen', measure: 'Voorraad versneld omzetten in facturen', effect: null, effectLabel: 'tot € 1.158.000', term: 'doorlopend', reducesGap: false },
+  // Toegevoegd 11 augustus (buiten de oorspronkelijke prognose-tabel om, op aangeven van
+  // Bart): extra financiering ophalen bij bestaande aandeelhouders. Dit bedrag staat niet
+  // in Basetime_cashflow_forecast.xlsx en is dus geen Odoo-afgeleid cijfer, maar een door
+  // Bart ingeschat streefbedrag.
+  { id: 'aandeelhouders', measure: 'Extra financiering ophalen bij bestaande aandeelhouders', effect: 500000, term: 'binnen een maand', reducesGap: true },
+];
+
+const BASELINE_GAP = 453738; // benodigde storting, scenario C, 7 augustus 2026
+
+function loadActieplanState(){
+  try {
+    return JSON.parse(localStorage.getItem(ACTIEPLAN_STORAGE_KEY) || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveActieplanState(state){
+  try {
+    localStorage.setItem(ACTIEPLAN_STORAGE_KEY, JSON.stringify(state));
+  } catch (e) { /* privémodus of quota — negeren, checklist werkt dan alleen binnen deze sessie */ }
+}
+
+function toggleAction(id){
+  const state = loadActieplanState();
+  state[id] = !state[id];
+  saveActieplanState(state);
+  renderActieplan();
+}
+
+function renderActieplan(){
+  actieplanRendered = true;
+  const state = loadActieplanState();
+  const list = document.getElementById('action-list');
+  list.innerHTML = '';
+
+  let fixedTotal = 0, fixedDone = 0, gapReduction = 0;
+  STUURKNOPPEN.forEach(item => {
+    const done = !!state[item.id];
+    if (item.effect !== null){
+      fixedTotal += item.effect;
+      if (done){
+        fixedDone += item.effect;
+        if (item.reducesGap) gapReduction += item.effect;
+      }
+    }
+    const row = document.createElement('div');
+    row.className = 'action-row' + (done ? ' done' : '');
+    const effectText = item.effect !== null ? fmtEUR0.format(item.effect) : item.effectLabel;
+    const baselineNote = (item.effect !== null && !item.reducesGap)
+      ? '<div class="action-meta" style="font-style:italic;">Al verwerkt in het startpunt van €453.738 hieronder — afvinken verandert het resterende gat niet</div>'
+      : '';
+    row.innerHTML = `
+      <input type="checkbox" ${done ? 'checked' : ''} onchange="toggleAction('${item.id}')">
+      <div class="action-main">
+        <div class="action-measure">${item.measure}</div>
+        <div class="action-meta">Termijn: ${item.term}</div>
+        ${baselineNote}
+      </div>
+      <div class="action-effect">${effectText}</div>
+    `;
+    list.appendChild(row);
+  });
+
+  const pct = fixedTotal ? Math.round(fixedDone / fixedTotal * 100) : 0;
+  document.getElementById('actieplan-progress-value').textContent =
+    fmtEUR0.format(fixedDone) + ' van ' + fmtEUR0.format(fixedTotal) + ' (' + pct + '%)';
+  document.getElementById('actieplan-progress-fill').style.width = pct + '%';
+
+  const remainingGap = BASELINE_GAP - gapReduction;
+  const gapValueEl = document.getElementById('gap-value');
+  if (remainingGap <= 0) {
+    gapValueEl.textContent = 'Geen tekort meer';
+    gapValueEl.style.color = '#1a7f37';
+  } else {
+    gapValueEl.textContent = fmtEUR0.format(remainingGap);
+    gapValueEl.style.color = '';
+  }
+  const surplusNote = remainingGap < 0
+    ? ' Dit is inclusief een geschat overschot van ' + fmtEUR0.format(Math.abs(remainingGap)) + ' boven het startpunt — bij afgevinkte maatregelen die groter zijn dan het resterende tekort.'
+    : '';
+  document.getElementById('gap-sub').textContent =
+    'Startpunt €' + BASELINE_GAP.toLocaleString('nl-NL') + ' (scenario C, 7 augustus) min de afgevinkte maatregelen die daar nog niet in zaten (' + fmtEUR0.format(gapReduction) + ').' + surplusNote;
+}
+
+const tooltip = document.getElementById('tooltip');
+function showTip(evt, html){
+  tooltip.innerHTML = html;
+  tooltip.style.display = 'block';
+  tooltip.style.left = (evt.clientX + 14) + 'px';
+  tooltip.style.top = (evt.clientY - 10) + 'px';
+}
+function hideTip(){ tooltip.style.display = 'none'; }
+function css(name){ return getComputedStyle(document.querySelector('.viz-root')).getPropertyValue(name).trim(); }
+function attachTooltips(svg){
+  svg.querySelectorAll('[data-tip]').forEach(el=>{
+    el.addEventListener('mousemove', (evt)=>{
+      const [lab, name, val] = el.getAttribute('data-tip').split('|');
+      showTip(evt, `<div class="tt-label">${lab}${name?(' · '+name):''}</div><div>${val}</div>`);
+    });
+    el.addEventListener('mouseleave', hideTip);
+  });
+}
+
+function sparkline(values, color){
+  if (!values || values.length < 2) return '';
+  const w=90,h=28,pad=2;
+  const min=Math.min(...values), max=Math.max(...values);
+  const range = (max-min)||1;
+  const pts = values.map((v,i)=>{
+    const x = pad + i*(w-2*pad)/(values.length-1);
+    const y = h-pad - (v-min)/range*(h-2*pad);
+    return [x,y];
+  });
+  const path = pts.map((p,i)=> (i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  const last = pts[pts.length-1];
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+    <path d="${path}" fill="none" stroke="${color}" stroke-width="1.6" opacity="0.55" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="2.4" fill="${color}"/>
+  </svg>`;
+}
+
+function tile(label, value, sub, delta, values, color, flag){
+  const div = document.createElement('div');
+  div.className = 'tile';
+  div.innerHTML = `
+    ${flag ? `<span class="flag ${flag.cls}">${flag.text}</span>` : ''}
+    <p class="label">${label}</p>
+    <div class="value">${value}</div>
+    ${delta ? `<div class="delta ${delta.cls}">${delta.text}</div>` : ''}
+    ${sub ? `<p class="sub">${sub}</p>` : ''}
+    ${values ? sparkline(values, color) : ''}
+  `;
+  return div;
+}
+
+// --- Lopende maand in de grafieken -----------------------------------------
+// De laatste kolom kan een nog niet afgelopen maand zijn. Die tekenen we half
+// doorzichtig met een gestreepte omlijning, zodat in één oogopslag duidelijk is dat
+// die staaf lager staat omdat de maand nog loopt — niet omdat het slechter gaat.
+function partialBarAttrs(isPartial, color){
+  return isPartial
+    ? ` fill-opacity="0.3" stroke="${color}" stroke-width="1.5" stroke-dasharray="3 2"`
+    : '';
+}
+
+function tipLabel(lab, isPartial){
+  return isPartial ? lab.replace('*','') + ' (loopt nog)' : lab;
+}
+
+function drawGroupedBar(svgId, labels, seriesA, seriesB, colorA, colorB, fmtValue, partialLast){
+  const svg = document.getElementById(svgId);
+  const W=520,H=220, ML=8, MR=8, MT=14, MB=28;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  const maxV = Math.max(...seriesA, ...seriesB, 1) * 1.12;
+  const bandW = plotW/labels.length;
+  const barW = Math.min(16, bandW*0.30);
+  let s = `<g>`;
+  for(let g=0;g<=4;g++){
+    const y = MT + plotH - g*plotH/4;
+    s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+    s += `<text class="axis-label" x="${ML}" y="${y-3}">${fmtEURK(g*maxV/4)}</text>`;
+  }
+  labels.forEach((lab,i)=>{
+    const cx = ML + bandW*i + bandW/2;
+    const xa = cx - barW - 2, xb = cx + 2;
+    const ha = seriesA[i]/maxV*plotH, hb = seriesB[i]/maxV*plotH;
+    const ya = MT+plotH-ha, yb = MT+plotH-hb;
+    const isPartial = !!partialLast && i === labels.length-1;
+    const tl = tipLabel(lab, isPartial);
+    s += `<rect data-tip="${tl}|Netto-omzet|${fmtValue(seriesA[i])}" x="${xa}" y="${ya}" width="${barW}" height="${ha}" rx="3" fill="${colorA}"${partialBarAttrs(isPartial, colorA)}/>`;
+    s += `<rect data-tip="${tl}|Kostprijs|${fmtValue(seriesB[i])}" x="${xb}" y="${yb}" width="${barW}" height="${hb}" rx="3" fill="${colorB}"${partialBarAttrs(isPartial, colorB)}/>`;
+    s += `<text class="axis-label${isPartial?' partial':''}" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+  });
+  s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${MT+plotH}" y2="${MT+plotH}"/>`;
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
+function drawBar(svgId, labels, series, color, fmtValue, diverging, partialLast){
+  const svg = document.getElementById(svgId);
+  const W=520,H=220, ML=8, MR=8, MT=14, MB=28;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  const bandW = plotW/labels.length;
+  const barW = Math.min(26, bandW*0.5);
+  let s = `<g>`;
+  if (diverging){
+    const maxAbs = Math.max(...series.map(Math.abs), 1) * 1.15;
+    const zeroY = MT + plotH/2;
+    for(let g=-2;g<=2;g++){
+      const y = zeroY - g*plotH/2/2;
+      s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+      s += `<text class="axis-label" x="${ML}" y="${y-3}">${fmtEURK(g*maxAbs/2)}</text>`;
+    }
+    labels.forEach((lab,i)=>{
+      const cx = ML + bandW*i + bandW/2;
+      const v = series[i];
+      const h = Math.abs(v)/maxAbs*(plotH/2);
+      const y = v>=0 ? zeroY-h : zeroY;
+      const c = v>=0 ? css('--series-1') : css('--series-8');
+      const isPartial = !!partialLast && i === labels.length-1;
+      s += `<rect data-tip="${tipLabel(lab, isPartial)}|Netto kasstroom|${fmtValue(v)}" x="${cx-barW/2}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${c}"${partialBarAttrs(isPartial, c)}/>`;
+      s += `<text class="axis-label${isPartial?' partial':''}" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+    });
+    s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${zeroY}" y2="${zeroY}"/>`;
+  } else {
+    const maxV = Math.max(...series, 1) * 1.12;
+    for(let g=0;g<=4;g++){
+      const y = MT + plotH - g*plotH/4;
+      s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+      s += `<text class="axis-label" x="${ML}" y="${y-3}">${fmtEURK(g*maxV/4)}</text>`;
+    }
+    labels.forEach((lab,i)=>{
+      const cx = ML + bandW*i + bandW/2;
+      const h = series[i]/maxV*plotH;
+      const y = MT+plotH-h;
+      const isPartial = !!partialLast && i === labels.length-1;
+      s += `<rect data-tip="${tipLabel(lab, isPartial)}||${fmtValue(series[i])}" x="${cx-barW/2}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${color}"${partialBarAttrs(isPartial, color)}/>`;
+      s += `<text class="axis-label${isPartial?' partial':''}" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+    });
+    s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${MT+plotH}" y2="${MT+plotH}"/>`;
+  }
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
+function drawLine(svgId, labels, series, color, fmtValue, partialLast){
+  const svg = document.getElementById(svgId);
+  const W=520,H=220, ML=8, MR=8, MT=14, MB=28;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  const minV = Math.min(...series)*0.9, maxV = Math.max(...series, 1)*1.08;
+  const range = (maxV-minV)||1;
+  const stepX = plotW/Math.max(labels.length-1,1);
+  let s = `<g>`;
+  for(let g=0;g<=4;g++){
+    const y = MT + plotH - g*plotH/4;
+    const val = minV + g*range/4;
+    s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+    s += `<text class="axis-label" x="${ML}" y="${y-3}">${fmtValue(val)}</text>`;
+  }
+  const pts = series.map((v,i)=>[ML+i*stepX, MT+plotH-(v-minV)/range*plotH]);
+  // Bij een nog lopende laatste maand: het slotstuk van de lijn gestreept tekenen en
+  // het laatste punt hol laten, zodat het als voorlopig leest.
+  const solidPts = (partialLast && pts.length > 1) ? pts.slice(0, -1) : pts;
+  const solidPath = solidPts.map((p,i)=>(i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  s += `<path d="${solidPath}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  if (partialLast && pts.length > 1){
+    const a = pts[pts.length-2], b = pts[pts.length-1];
+    s += `<path d="M${a[0].toFixed(1)},${a[1].toFixed(1)} L${b[0].toFixed(1)},${b[1].toFixed(1)}" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="4 3" stroke-linecap="round" opacity="0.7"/>`;
+  }
+  pts.forEach((p,i)=>{
+    const isPartial = !!partialLast && i === pts.length-1;
+    const fill = isPartial ? css('--surface-1') : color;
+    s += `<circle data-tip="${tipLabel(labels[i], isPartial)}||${fmtValue(series[i])}" cx="${p[0]}" cy="${p[1]}" r="4.5" fill="${fill}" stroke="${isPartial ? color : css('--surface-1')}" stroke-width="2"/>`;
+    s += `<text class="axis-label${isPartial?' partial':''}" x="${p[0]}" y="${H-8}" text-anchor="middle">${labels[i]}</text>`;
+  });
+  if (pts.length){
+    const lastp = pts[pts.length-1];
+    s += `<text class="data-label" x="${lastp[0]}" y="${lastp[1]-10}" text-anchor="middle">${fmtValue(series[series.length-1])}</text>`;
+  }
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
+function drawHBar(svgId, data){
+  const svg = document.getElementById(svgId);
+  const W=1080,H=230, ML=170, MR=90, MT=10, MB=10;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  if (!data.length){ svg.innerHTML = ''; return; }
+  const rowH = plotH/data.length;
+  const barH = Math.min(26, rowH*0.55);
+  const maxV = Math.max(...data.map(d=>d.nominal), 1)*1.05;
+  let s = `<g>`;
+  const gticks = 4;
+  for(let g=0;g<=gticks;g++){
+    const x = ML + g*plotW/gticks;
+    s += `<line class="gridline" x1="${x}" x2="${x}" y1="${MT}" y2="${H-MB}"/>`;
+    s += `<text class="axis-label" x="${x}" y="${H-2}" text-anchor="middle">${fmtEURK(g*maxV/gticks)}</text>`;
+  }
+  data.forEach((d,i)=>{
+    const cy = MT + rowH*i + rowH/2;
+    const wNom = d.nominal/maxV*plotW;
+    const wWei = d.weighted/maxV*plotW;
+    s += `<text class="axis-label" x="${ML-10}" y="${cy+4}" text-anchor="end">${d.stage}</text>`;
+    s += `<rect data-tip="${d.stage}|Nominaal|${fmtEUR0.format(d.nominal)}" x="${ML}" y="${cy-barH/2}" width="${wNom}" height="${barH}" rx="4" fill="var(--seq-100)"/>`;
+    s += `<rect data-tip="${d.stage}|Gewogen|${fmtEUR0.format(d.weighted)}" x="${ML}" y="${cy-barH/2}" width="${wWei}" height="${barH}" rx="4" fill="${css('--series-1')}"/>`;
+    s += `<text class="data-label" x="${ML+Math.max(wNom,wWei)+8}" y="${cy+4}">${fmtEURK(d.weighted)}</text>`;
+  });
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+
+  const existingLegend = svg.parentElement.querySelector('.legend.dynamic');
+  if (existingLegend) existingLegend.remove();
+  const legend = document.createElement('div');
+  legend.className = 'legend dynamic';
+  legend.style.marginTop = '10px';
+  legend.innerHTML = `<span class="key"><span class="swatch" style="background:var(--seq-100)"></span>Nominaal (100%)</span>
+                       <span class="key"><span class="swatch" style="background:var(--series-1)"></span>Gewogen (kans x nominaal)</span>`;
+  svg.parentElement.appendChild(legend);
+}
+
+function drawMovementsBar(svgId, labels, seriesIn, seriesOut, colorIn, colorOut, partialLast){
+  const svg = document.getElementById(svgId);
+  const W=1080,H=220, ML=40, MR=16, MT=14, MB=28;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  const fmtUnits = (v) => Math.round(v).toLocaleString('nl-NL') + ' stuks';
+  if (!labels.length){ svg.innerHTML = ''; return; }
+  const maxV = Math.max(...seriesIn, ...seriesOut, 1) * 1.12;
+  const bandW = plotW/labels.length;
+  const barW = Math.min(30, bandW*0.30);
+  let s = `<g>`;
+  for(let g=0;g<=4;g++){
+    const y = MT + plotH - g*plotH/4;
+    s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+    s += `<text class="axis-label" x="${ML}" y="${y-3}">${Math.round(g*maxV/4)}</text>`;
+  }
+  labels.forEach((lab,i)=>{
+    const cx = ML + bandW*i + bandW/2;
+    const xa = cx - barW - 2, xb = cx + 2;
+    const ha = seriesIn[i]/maxV*plotH, hb = seriesOut[i]/maxV*plotH;
+    const ya = MT+plotH-ha, yb = MT+plotH-hb;
+    const isPartial = !!partialLast && i === labels.length-1;
+    const tl = tipLabel(lab, isPartial);
+    s += `<rect data-tip="${tl}|Ontvangen|${fmtUnits(seriesIn[i])}" x="${xa}" y="${ya}" width="${barW}" height="${ha}" rx="3" fill="${colorIn}"${partialBarAttrs(isPartial, colorIn)}/>`;
+    s += `<rect data-tip="${tl}|Geleverd|${fmtUnits(seriesOut[i])}" x="${xb}" y="${yb}" width="${barW}" height="${hb}" rx="3" fill="${colorOut}"${partialBarAttrs(isPartial, colorOut)}/>`;
+    s += `<text class="axis-label${isPartial?' partial':''}" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+  });
+  s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${MT+plotH}" y2="${MT+plotH}"/>`;
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
+let currentPayload = null;
+
+function updateLiquidityTiles(){
+  if (!currentPayload) return;
+  const input = document.getElementById('credit-limit-input');
+  const parsed = parseFloat(input.value);
+  const creditLimit = isNaN(parsed) ? currentPayload.cash.credit_limit : parsed;
+  const bankBalance = currentPayload.cash.available_now;
+  const headroom = bankBalance - creditLimit;
+
+  document.getElementById('liquidity-value').textContent = fmtEUR0.format(headroom);
+  document.getElementById('liquidity-sub').textContent = 'banksaldo ' + fmtEUR0.format(bankBalance) + ' + kredietruimte tot ' + fmtEUR0.format(creditLimit);
+  const flagEl = document.getElementById('liquidity-flag');
+  flagEl.style.display = '';
+  flagEl.className = 'flag ' + (headroom < 0 ? 'crit' : 'ok');
+  flagEl.textContent = headroom < 0 ? 'over limiet' : 'binnen limiet';
+
+  const fixedCosts = currentPayload.runway.fixed_monthly_costs;
+  const runwayMonths = fixedCosts ? headroom / fixedCosts : 0;
+  const runwayWeeks = Math.round(runwayMonths * 4.345 * 10) / 10;
+  document.getElementById('runway-value').textContent = runwayWeeks + ' weken';
+}
+
+function render(payload){
+  currentPayload = payload;
+  document.getElementById('skeleton').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+
+  const updated = new Date(payload.generated_at);
+  document.getElementById('last-updated').textContent = 'Bijgewerkt: ' + updated.toLocaleString('nl-NL');
+
+  // laat expliciet zien welke periode je nu bekijkt — een screenshot moet zonder
+  // context leesbaar zijn
+  const w = payload.window || {};
+  document.getElementById('period-current').textContent =
+    'Nu getoond: ' + (w.label_text || '') + (w.from && w.to ? ' (' + w.from + ' t/m ' + w.to + ')' : '');
+  if (w.mode === 'range'){
+    PERIOD_PRESETS.forEach(m => {
+      const btn = document.getElementById('period-btn-' + m);
+      if (btn) btn.classList.remove('active');
+    });
+  }
+
+  const errBanner = document.getElementById('banner-error');
+  const warnBanner = document.getElementById('banner-warn');
+  errBanner.style.display = 'none';
+  warnBanner.style.display = 'none';
+  if (payload.stale_error){
+    warnBanner.style.display = 'block';
+    warnBanner.textContent = 'Kon geen verse data ophalen uit Odoo (' + payload.stale_error + '). Cijfers hieronder zijn de laatst bekende, van ' + updated.toLocaleString('nl-NL') + '.';
+  }
+
+  const labels = payload.window.labels;
+  // De lopende maand wordt achter de volledige maanden geplakt, met een * in het aslabel
+  // en een voetnoot onder elke grafiek. De reeksen in `payload` zelf blijven onaangeroerd,
+  // zodat gemiddelden en break-even op volledige maanden gebaseerd blijven.
+  const cm = payload.current_month;
+  const chartLabels = cm ? labels.concat([cm.label + '*']) : labels;
+  const withCm = (series, value) => cm ? series.concat([value]) : series;
+  const cmNote = cm
+    ? ' * ' + cm.label + ' loopt nog: stand t/m dag ' + cm.day_of_month + ' van ' + cm.days_in_month
+      + ' (' + cm.elapsed_pct + '% van de maand). Die kolom telt niet mee in de gemiddelden hierboven.'
+    : '';
+
+  const tilesTop = document.getElementById('tiles-top');
+  const tilesBottom = document.getElementById('tiles-bottom');
+  tilesTop.innerHTML = ''; tilesBottom.innerHTML = '';
+
+  // Beschikbare liquiditeit = banksaldo + nog beschikbare kredietruimte. Dát is het
+  // bedrag dat je feitelijk kunt uitgeven, niet het kale banksaldo (zie hieronder).
+  const liqTile = document.createElement('div');
+  liqTile.className = 'tile';
+  liqTile.innerHTML = `
+    <span class="flag" id="liquidity-flag"></span>
+    <p class="label">Beschikbare liquiditeit</p>
+    <div class="value" id="liquidity-value">–</div>
+    <p class="sub" id="liquidity-sub"></p>
+  `;
+  tilesTop.appendChild(liqTile);
+
+  // Kredietlimiet is GEEN vast bedrag in Odoo (het is een aanname in config/env) —
+  // daarom hier aanpasbaar, zodat liquiditeit en runway direct herberekenen.
+  const limitTile = document.createElement('div');
+  limitTile.className = 'tile';
+  limitTile.innerHTML = `
+    <p class="label">Kredietlimiet</p>
+    <div class="value"><input type="number" id="credit-limit-input" step="1000"
+      style="width:100%;font-size:22px;font-weight:650;background:transparent;border:none;color:var(--text-primary);padding:0;font-family:inherit;"
+      value="${payload.cash.credit_limit}"></div>
+    <p class="sub">geen vast bedrag in Odoo — pas hier aan om te herberekenen</p>
+  `;
+  tilesTop.appendChild(limitTile);
+
+  const runwayTile = document.createElement('div');
+  runwayTile.className = 'tile';
+  runwayTile.innerHTML = `
+    <span class="flag warn">vereenvoudigd</span>
+    <p class="label">Runway (indicatie)</p>
+    <div class="value" id="runway-value">–</div>
+    <p class="sub">liquiditeit ÷ vaste maandlasten</p>
+  `;
+  tilesTop.appendChild(runwayTile);
+
+  tilesTop.appendChild(tile('Netto cashburn (structureel)', fmtEUR0.format(payload.runway.fixed_monthly_costs) + ' / mnd', 'vaste maandlasten; werkelijke bankmutatie gem. ' + fmtEUR0.format(payload.cashflow_avg) + '/mnd', null, payload.cashflow, css('--series-8')));
+
+  document.getElementById('credit-limit-input').addEventListener('input', updateLiquidityTiles);
+  updateLiquidityTiles();
+
+  const lastIdx = payload.margin_pct.length - 1;
+  const lastMonthLabel = labels.length ? labels[labels.length-1] : '';
+  // Bij elke maandtegel zetten we de stand van de lopende maand erbij, zodat je de
+  // laatste vólle maand en "waar staan we nu" naast elkaar ziet zonder ze te verwarren.
+  const mtd = (text) => cm ? ' · ' + cm.label + ' t/m nu: ' + text : '';
+  tilesBottom.appendChild(tile('Order intake — ' + lastMonthLabel, fmtEUR0.format(payload.order_intake[payload.order_intake.length-1] || 0), payload.window.label_text + ': ' + fmtEUR0.format(payload.order_intake_sum) + mtd(fmtEUR0.format(cm ? cm.order_intake : 0)), null, payload.order_intake, css('--series-1')));
+  tilesBottom.appendChild(tile('Recurring omzet (subscription) — ' + lastMonthLabel, fmtEUR0.format(payload.recurring_revenue[payload.recurring_revenue.length-1] || 0), 'gem. ' + fmtEUR0.format(payload.recurring_revenue_avg) + ' / mnd' + mtd(fmtEUR0.format(cm ? cm.recurring_revenue : 0)), null, payload.recurring_revenue, css('--series-3')));
+  tilesBottom.appendChild(tile('Brutomarge — ' + lastMonthLabel, fmtPct(payload.margin_pct[lastIdx]), payload.window.label_text + mtd(fmtPct(cm ? cm.margin_pct : 0)), null, payload.margin_pct, css('--series-1')));
+
+  const topDeal = payload.pipeline.top_deals[0];
+  const topShare = topDeal && payload.pipeline.weighted_total ? Math.round(topDeal.weighted/payload.pipeline.weighted_total*100) : 0;
+  tilesBottom.appendChild(tile('Gewogen pipeline', fmtEUR0.format(payload.pipeline.weighted_total), payload.pipeline.opportunity_count + ' open kansen, nominaal ' + fmtEUR0.format(payload.pipeline.nominal_total), null, null, null, topShare>=20?{cls:'gap',text:'geconcentreerd'}:null));
+  tilesBottom.appendChild(tile('Inkoopbacklog', fmtEUR0.format(payload.purchase_backlog.total), payload.purchase_backlog.order_count + ' open orders, waarvan ' + fmtEUR0.format(payload.purchase_backlog.future_years) + ' in latere jaren'));
+
+  // --- Cash conversion & klantrisico -------------------------------------
+  const tilesRisk = document.getElementById('tiles-risk');
+  tilesRisk.innerHTML = '';
+
+  const ar = payload.aging.receivables, ap = payload.aging.payables;
+  const arOld = ar.buckets.find(b => b.label === '90+ dagen');
+  const arOldShare = arOld && ar.total ? arOld.amount / ar.total * 100 : 0;
+  tilesRisk.appendChild(tile('Openstaande debiteuren', fmtEUR0.format(ar.total), (ar.top_partners[0] ? 'grootste: ' + ar.top_partners[0].name : 'geen openstaande posten'), null, null, null, arOldShare >= 15 ? {cls:'crit', text:'>90 dagen'} : null));
+  tilesRisk.appendChild(tile('Openstaande crediteuren', fmtEUR0.format(ap.total), (ap.top_partners[0] ? 'grootste: ' + ap.top_partners[0].name : 'geen openstaande posten')));
+
+  const cc = payload.customer_concentration;
+  tilesRisk.appendChild(tile('Klantconcentratie', fmtPct(cc.top_n_share_pct), 'top ' + cc.top_customers.length + ' klanten, ' + cc.window_label, null, null, null, cc.top_n_share_pct >= 40 ? {cls:'gap', text:'geconcentreerd'} : null));
+
+  const be = payload.break_even;
+  if (be.monthly_revenue_needed !== null && be.monthly_revenue_needed !== undefined){
+    const covered = be.gap_to_latest_month <= 0;
+    tilesRisk.appendChild(tile('Break-evenomzet', fmtEUR0.format(be.monthly_revenue_needed) + ' / mnd', 'bij ' + fmtPct(be.based_on_margin_pct) + ' brutomarge over ' + payload.window.label_text,
+      null, null, null,
+      {cls: covered ? 'ok' : 'bad', text: (covered ? 'gehaald' : fmtEUR0.format(be.gap_to_latest_month) + ' tekort')}));
+  } else {
+    tilesRisk.appendChild(tile('Break-evenomzet', 'n.v.t.', 'brutomarge over ' + payload.window.label_text + ' is nul of negatief — geen break-evenpunt te berekenen'));
+  }
+
+  document.getElementById('sub-aging').textContent = 'Debiteuren ' + fmtEUR0.format(ar.total) + ' · Crediteuren ' + fmtEUR0.format(ap.total);
+  // buckets die op alle twee de kanten nul zijn (meestal "Onbekend") laten we weg,
+  // anders raakt de laatste as-label overvol op een chart met maar 520px breedte
+  const agingIdx = ar.buckets.map((b,i)=> (b.amount || ap.buckets[i].amount) ? i : -1).filter(i=>i>=0);
+  const agingLabels = agingIdx.map(i => ar.buckets[i].label);
+  const agingAr = agingIdx.map(i => ar.buckets[i].amount);
+  const agingAp = agingIdx.map(i => ap.buckets[i].amount);
+  drawGroupedBar('chart-aging', agingLabels, agingAr, agingAp, css('--series-1'), css('--series-2'), (v)=>fmtEUR0.format(v));
+
+  document.getElementById('top-debtors-heading').textContent = 'Grootste openstaande debiteuren (top ' + ar.top_partners.length + ')';
+  const debtorsBody = document.querySelector('#debtors-table tbody');
+  debtorsBody.innerHTML = '';
+  ar.top_partners.forEach(p=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">${p.name}</td><td>${fmtEUR0.format(p.amount)}</td>`;
+    debtorsBody.appendChild(tr);
+  });
+
+  document.getElementById('top-customers-heading').textContent = 'Grootste klanten naar gefactureerde omzet (top ' + cc.top_customers.length + ')';
+  document.getElementById('sub-customer-concentration').textContent = 'Totale gefactureerde omzet ' + cc.window_label + ': ' + fmtEUR0.format(cc.total_revenue);
+  const customersBody = document.querySelector('#customers-table tbody');
+  customersBody.innerHTML = '';
+  cc.top_customers.forEach(c=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">${c.name}</td><td>${fmtEUR0.format(c.amount)}</td><td>${fmtPct(c.share_pct)}</td>`;
+    customersBody.appendChild(tr);
+  });
+
+  document.getElementById('note-revcogs').textContent = 'Netto-omzet en kostprijs uit geboekte grootboekmutaties (rekeningtype income / expense_direct_cost), over ' + payload.window.label_text + '.' + cmNote;
+  document.getElementById('sub-revcogs').textContent = 'Per maand (€)';
+  document.getElementById('sub-margin').textContent = 'Per maand';
+  document.getElementById('sub-orders').textContent = 'Per maand (€, excl. btw)';
+  document.getElementById('sub-cash').textContent = 'Per maand (€) — boven/onder nul';
+
+  const partial = !!cm;
+  drawGroupedBar('chart-revcogs', chartLabels, withCm(payload.revenue, cm && cm.revenue), withCm(payload.cogs, cm && cm.cogs), css('--series-1'), css('--series-2'), (v)=>fmtEUR0.format(v), partial);
+  drawLine('chart-margin', chartLabels, withCm(payload.margin_pct, cm && cm.margin_pct), css('--series-1'), (v)=>fmtPct(v), partial);
+  drawBar('chart-orders', chartLabels, withCm(payload.order_intake, cm && cm.order_intake), css('--series-1'), (v)=>fmtEUR0.format(v), false, partial);
+  drawBar('chart-cash', chartLabels, withCm(payload.cashflow, cm && cm.cashflow), null, (v)=>fmtEUR0.format(v), true, partial);
+  drawHBar('chart-pipeline', payload.pipeline.by_stage);
+
+  document.getElementById('note-pipeline').textContent = payload.pipeline.opportunity_count + ' open kansen in de CRM-pijplijn (excl. gesloten-won / gesloten-verloren), gewogen met de kans per opportunity uit Odoo.';
+  if (topDeal){
+    document.getElementById('note-concentration').innerHTML = '<b>Gewogen pipeline</b> (' + fmtEUR0.format(payload.pipeline.weighted_total) + ') kan sterk leunen op een klein aantal grote deals. De grootste kans nu — "' + topDeal.name + '" — is alleen al ' + fmtEUR0.format(topDeal.weighted) + ' (' + topShare + '%) van het gewogen totaal.';
+  }
+
+  // --- Beweging in de pijplijn -------------------------------------------
+  renderPipelineMovement(payload.pipeline_movement);
+
+  const tbody = document.querySelector('#pipeline-table tbody');
+  tbody.innerHTML = '';
+  payload.pipeline.top_deals.forEach(d=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">${d.name}</td><td>${d.stage}</td><td>${fmtPct(d.probability)}</td><td>${fmtEUR0.format(d.nominal)}</td><td>${fmtEUR0.format(d.weighted)}</td>`;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('top-deals-heading').textContent = 'Top ' + payload.pipeline.top_deals.length + ' kansen naar gewogen waarde';
+}
+
+// --- Doorklik-detailschermen (modal met de volledige, niet-ingekorte lijst) ------
+let detailCache = {};
+let detailState = { key: null, rawData: null };
+
+const DETAIL_TITLES = {
+  aging: 'Alle openstaande posten (debiteuren & crediteuren)',
+  pipeline: 'Alle open kansen in de pijplijn',
+  customer_concentration: 'Alle klanten naar gefactureerde omzet',
+  purchase_backlog: 'Alle open inkooporders',
+  order_intake: 'Alle bevestigde orders (order intake)',
+  pipeline_movement: 'Alle bewegingen in de pijplijn',
+  stock_value: 'Alle producten op voorraad (naar waarde)',
+  stock_movements: 'Alle voorraadmutaties',
+};
+
+async function openDetailModal(key){
+  detailState = { key, rawData: null };
+  document.getElementById('detail-modal-title').textContent = DETAIL_TITLES[key] || 'Details';
+  document.getElementById('detail-modal-sub').textContent = '';
+  document.getElementById('detail-modal-search').value = '';
+  document.getElementById('detail-modal-body').innerHTML = '<div class="modal-state">Cijfers ophalen uit Odoo…</div>';
+  document.getElementById('detail-modal').classList.add('open');
+
+  if (detailCache[key]){
+    detailState.rawData = detailCache[key];
+    renderDetailModal();
+    return;
+  }
+  try {
+    const resp = await fetch('/api/details/' + key + periodQuery(false));
+    if (!resp.ok){
+      const body = await resp.json().catch(()=>({detail: resp.statusText}));
+      throw new Error(body.detail || resp.statusText);
+    }
+    const data = await resp.json();
+    detailCache[key] = data;
+    detailState.rawData = data;
+    renderDetailModal();
+  } catch (err){
+    document.getElementById('detail-modal-body').innerHTML = '<div class="modal-state">Kon details niet ophalen: ' + err.message + '</div>';
+  }
+}
+
+function closeDetailModal(){
+  document.getElementById('detail-modal').classList.remove('open');
+}
+
+document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape') closeDetailModal(); });
+
+function filterDetailModal(){
+  renderDetailModal();
+}
+
+function detailTable(columns, rows){
+  if (!rows.length) return '<div class="modal-state">Geen regels.</div>';
+  let s = '<table class="data-table"><thead><tr>' + columns.map(c=>'<th>'+c.label+'</th>').join('') + '</tr></thead><tbody>';
+  rows.forEach(r=>{
+    s += '<tr>' + columns.map((c,i)=>'<td' + (i===0?' class="name"':'') + '>' + c.fmt(r) + '</td>').join('') + '</tr>';
+  });
+  s += '</tbody></table>';
+  return s;
+}
+
+function renderDetailModal(){
+  const key = detailState.key;
+  const data = detailState.rawData;
+  if (!data) return;
+  const q = document.getElementById('detail-modal-search').value.trim().toLowerCase();
+  const body = document.getElementById('detail-modal-body');
+
+  if (key === 'aging'){
+    const filt = (items) => q ? items.filter(i => i.partner.toLowerCase().includes(q)) : items;
+    const ar = filt(data.receivables), ap = filt(data.payables);
+    document.getElementById('detail-modal-sub').textContent = ar.length + ' debiteurenregels · ' + ap.length + ' crediteurenregels';
+    const cols = [
+      {label:'Klant', fmt:r=>r.partner},
+      {label:'Factuur', fmt:r=>r.invoice||'–'},
+      {label:'Vervaldatum', fmt:r=>r.due_date||'–'},
+      {label:'Dagen te laat', fmt:r=>r.days_overdue===null?'–':r.days_overdue},
+      {label:'Categorie', fmt:r=>r.bucket},
+      {label:'Bedrag excl. btw (€)', fmt:r=>fmtEUR0.format(r.amount)},
+    ];
+    body.innerHTML =
+      '<h4 style="margin:10px 0 6px;font-size:12.5px;color:var(--text-primary);">Debiteuren (' + ar.length + ')</h4>' +
+      detailTable(cols, ar) +
+      '<h4 style="margin:20px 0 6px;font-size:12.5px;color:var(--text-primary);">Crediteuren (' + ap.length + ')</h4>' +
+      detailTable(cols, ap);
+    return;
+  }
+
+  if (key === 'pipeline'){
+    const rows = q ? data.filter(d => (d.name+d.customer).toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' open kansen';
+    const cols = [
+      {label:'Kans', fmt:r=>r.name},
+      {label:'Klant', fmt:r=>r.customer},
+      {label:'Fase', fmt:r=>r.stage},
+      {label:'Kans %', fmt:r=>fmtPct(r.probability)},
+      {label:'Nominaal (€)', fmt:r=>fmtEUR0.format(r.nominal)},
+      {label:'Gewogen (€)', fmt:r=>fmtEUR0.format(r.weighted)},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+
+  if (key === 'customer_concentration'){
+    const rows = q ? data.filter(d => d.name.toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' klanten';
+    const cols = [
+      {label:'Klant', fmt:r=>r.name},
+      {label:'Omzet (€)', fmt:r=>fmtEUR0.format(r.amount)},
+      {label:'Aandeel', fmt:r=>fmtPct(r.share_pct)},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+
+  if (key === 'order_intake'){
+    const rows = q ? data.filter(d => (d.name+d.customer).toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' bevestigde orders';
+    const cols = [
+      {label:'Order', fmt:r=>r.name},
+      {label:'Klant', fmt:r=>r.customer},
+      {label:'Orderdatum', fmt:r=>r.order_date||'–'},
+      {label:'Bedrag (€)', fmt:r=>fmtEUR0.format(r.amount)},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+
+  if (key === 'purchase_backlog'){
+    const rows = q ? data.filter(d => (d.name+d.supplier).toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' open inkooporders';
+    const cols = [
+      {label:'PO', fmt:r=>r.name},
+      {label:'Leverancier', fmt:r=>r.supplier},
+      {label:'Bedrag (€)', fmt:r=>fmtEUR0.format(r.amount)},
+      {label:'Orderdatum', fmt:r=>r.order_date||'–'},
+      {label:'Verwachte datum', fmt:r=>r.planned_date||'–'},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+
+  if (key === 'pipeline_movement'){
+    const rows = q ? data.filter(d => (d.name+d.customer+d.category).toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' bewegingen in de periode';
+    const cols = [
+      {label:'Maand', fmt:r=>r.month},
+      {label:'Kans', fmt:r=>r.name},
+      {label:'Klant', fmt:r=>r.customer},
+      {label:'Wat er gebeurde', fmt:r=>r.category},
+      {label:'Van', fmt:r=>r.stage_from},
+      {label:'Naar', fmt:r=>r.stage_to},
+      {label:'Bedrag (€)', fmt:r=>fmtEUR0.format(r.amount)},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+
+  if (key === 'stock_value'){
+    const rows = q ? data.filter(d => d.name.toLowerCase().includes(q)) : data;
+    const totalMargin = rows.reduce((s,r)=>s+(r.margin_expected||0),0);
+    document.getElementById('detail-modal-sub').textContent =
+      rows.length + ' producten op voorraad · samen ' + fmtEUR0.format(totalMargin) + ' mogelijke marge';
+    const cols = [
+      {label:'Product', fmt:r=>r.name},
+      {label:'Aantal', fmt:r=>r.quantity},
+      {label:'Kostprijs (€)', fmt:r=>fmtEUR0.format(r.value)},
+      {label:'Verkoopprijs p/st', fmt:r=>stockPriceCell(r)},
+      {label:'Opbrengst (€)', fmt:r=>fmtEUR0.format(r.revenue_expected||0)},
+      {label:'Marge (€)', fmt:r=>fmtEUR0.format(r.margin_expected||0)},
+      {label:'Marge bij catalogusprijs (€)', fmt:r=>fmtEUR0.format(r.margin_list||0)},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+
+  if (key === 'stock_movements'){
+    const rows = q ? data.filter(d => d.product.toLowerCase().includes(q)) : data;
+    document.getElementById('detail-modal-sub').textContent = rows.length + ' mutaties';
+    const cols = [
+      {label:'Product', fmt:r=>r.product},
+      {label:'Datum', fmt:r=>r.date||'–'},
+      {label:'Richting', fmt:r=>r.direction},
+      {label:'Aantal', fmt:r=>r.quantity},
+    ];
+    body.innerHTML = detailTable(cols, rows);
+    return;
+  }
+}
+
+let currentInventoryPayload = null;
+
+// Verkoopprijs per stuk in de voorraadtabel. Maakt zichtbaar wáár het cijfer vandaan
+// komt: een echt gerealiseerde gemiddelde prijs, of (bij gebrek daaraan) de
+// catalogusprijs — dat scheelt nogal in hoe hard de opbrengst eronder is.
+function stockPriceCell(p){
+  if (p.price_source === 'gerealiseerd'){
+    return fmtEUR0.format(p.realized_price);
+  }
+  if (p.price_source === 'catalogus'){
+    return fmtEUR0.format(p.list_price) + ' <span style="color:var(--text-muted);font-size:11px;">cat.</span>';
+  }
+  return '<span style="color:var(--text-muted);">geen prijs</span>';
+}
+
+// Beweging in de pijplijn: netto standverschil per maand. Bewust niet het aantal
+// fasewijzigingen — daar zit veel correctiewerk in (een kans die binnen een minuut door
+// meerdere fases wordt geklikt), en dat zou activiteit meten in plaats van voortgang.
+function renderPipelineMovement(movement){
+  const tbody = document.querySelector('#pipeline-movement-table tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!movement || !movement.months || !movement.months.length){
+    document.getElementById('note-pipeline-movement').textContent =
+      'Geen wijzigingshistorie beschikbaar voor deze periode.';
+    return;
+  }
+
+  const cell = (bucket) => bucket && bucket.count
+    ? bucket.count + ' · ' + fmtEUR0.format(bucket.value)
+    : '–';
+
+  movement.months.forEach(m => {
+    const b = m.buckets || {};
+    const netClass = m.net_value > 0 ? 'net-up' : (m.net_value < 0 ? 'net-down' : '');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">${m.label}</td>`
+      + `<td>${fmtEUR0.format(m.open_start.value)}</td>`
+      + `<td>${cell(b['nieuw'])}</td>`
+      + `<td>${cell(b['vooruit'])}</td>`
+      + `<td>${cell(b['achteruit'])}</td>`
+      + `<td>${cell(b['gewonnen'])}</td>`
+      + `<td>${cell(b['verloren'])}</td>`
+      + `<td>${fmtEUR0.format(m.open_end.value)}</td>`
+      + `<td class="${netClass}">${(m.net_value > 0 ? '+' : '') + fmtEUR0.format(m.net_value)}</td>`;
+    tbody.appendChild(tr);
+  });
+
+  const totalWon = movement.months.reduce((s,m)=>s+((m.buckets['gewonnen']||{}).count||0),0);
+  const totalLost = movement.months.reduce((s,m)=>s+((m.buckets['verloren']||{}).count||0),0);
+  const winRate = (totalWon + totalLost) ? Math.round(totalWon/(totalWon+totalLost)*100) : null;
+  document.getElementById('note-pipeline-movement').textContent =
+    'Netto standverschil per maand, gereconstrueerd uit de wijzigingshistorie in Odoo: waar stond elke kans '
+    + 'aan het begin van de maand en waar aan het eind. Correcties binnen dezelfde maand vallen zo weg. '
+    + 'Bedragen zijn nominaal (verwachte omzet), niet gewogen — het kanspercentage wordt door Odoo niet '
+    + 'historisch bijgehouden. Over de hele periode: ' + totalWon + ' gewonnen tegen ' + totalLost + ' verloren'
+    + (winRate !== null ? ' (' + winRate + '% winratio)' : '') + '.';
+}
+
+function renderInventory(payload){
+  currentInventoryPayload = payload;
+  document.getElementById('inventory-skeleton').style.display = 'none';
+  document.getElementById('inventory-app').style.display = 'block';
+  document.getElementById('inventory-last-updated').textContent = 'Bijgewerkt: ' + new Date(payload.generated_at).toLocaleString('nl-NL');
+
+  const errBanner = document.getElementById('inventory-banner-error');
+  const warnBanner = document.getElementById('inventory-banner-warn');
+  errBanner.style.display = 'none';
+  warnBanner.style.display = 'none';
+  if (payload.stale_error){
+    warnBanner.style.display = 'block';
+    warnBanner.textContent = 'Kon geen verse voorraaddata ophalen (' + payload.stale_error + '). Cijfers hieronder zijn de laatst bekende.';
+  }
+
+  const tiles = document.getElementById('tiles-inventory');
+  tiles.innerHTML = '';
+  tiles.appendChild(tile('Voorraadwaarde (nu)', fmtEUR0.format(payload.stock_value.total), 'op basis van standaard-/gemiddelde kostprijs, interne locaties'));
+  const cov = payload.coverage;
+  const covText = (cov.months === null || cov.months === undefined) ? 'n.v.t.' : cov.months + ' maanden';
+  tiles.appendChild(tile('Voorraadrotatie (dekking)', covText, 'bij gem. kostprijs omzet ' + fmtEUR0.format(cov.avg_monthly_cogs) + '/mnd'));
+
+  // --- Mogelijk te realiseren opbrengst en marge -------------------------
+  // Twee bases naast elkaar: een realistische (gemiddelde prijs waarvoor het artikel de
+  // afgelopen 12 maanden daadwerkelijk is gefactureerd) en het theoretische plafond
+  // (catalogusprijs). Bij Basetime schelen die fors, dus één cijfer zou misleiden.
+  const sv = payload.stock_value;
+  const revTiles = document.getElementById('tiles-stock-revenue');
+  revTiles.innerHTML = '';
+  if (sv.revenue_expected !== undefined){
+    revTiles.appendChild(tile(
+      'Mogelijke opbrengst (realistisch)',
+      fmtEUR0.format(sv.revenue_expected),
+      'tegen de gemiddeld gerealiseerde verkoopprijs · plafond op catalogusprijs: ' + fmtEUR0.format(sv.revenue_list)
+    ));
+    revTiles.appendChild(tile(
+      'Mogelijke marge (realistisch)',
+      fmtEUR0.format(sv.margin_expected),
+      (sv.margin_expected_pct !== null && sv.margin_expected_pct !== undefined ? fmtPct(sv.margin_expected_pct) + ' marge · ' : '')
+        + 'plafond: ' + fmtEUR0.format(sv.margin_list)
+        + (sv.margin_list_pct !== null && sv.margin_list_pct !== undefined ? ' (' + fmtPct(sv.margin_list_pct) + ')' : '')
+    ));
+    revTiles.appendChild(tile(
+      'Kostprijs die erin zit',
+      fmtEUR0.format(sv.total),
+      'dit staat nu in de boeken; het verschil met de opbrengst is de marge die nog te realiseren valt'
+    ));
+
+    const disc = sv.revenue_list ? Math.round((1 - sv.revenue_expected / sv.revenue_list) * 100) : 0;
+    let note = 'De realistische kolom rekent per artikel met de gemiddelde prijs waarvoor het de laatste '
+      + sv.price_basis_months + ' maanden daadwerkelijk is gefactureerd (creditnota\'s eraf). '
+      + 'Dat ligt in de praktijk ' + disc + '% onder de catalogusprijs — die staat er als theoretisch plafond naast. '
+      + 'Dit is een indicatie van wat de voorraad kán opbrengen, geen orderboek: het zegt niets over wanneer het verkocht wordt.';
+    if (sv.fallback_share_pct > 0){
+      note += ' Let op: voor ' + fmtPct(sv.fallback_share_pct) + ' van de voorraadwaarde is geen verkoophistorie beschikbaar; '
+        + 'daar is de catalogusprijs gebruikt (of € 0 als die ook ontbreekt, zoals bij showcase-artikelen).';
+    }
+    document.getElementById('note-stock-revenue').textContent = note;
+  }
+
+  document.getElementById('stock-value-heading').textContent = 'Grootste posten naar waarde (top ' + payload.stock_value.by_product.length + ')';
+  const svBody = document.querySelector('#stock-value-table tbody');
+  svBody.innerHTML = '';
+  payload.stock_value.by_product.forEach(p=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">${p.name}</td><td>${p.quantity}</td><td>${fmtEUR0.format(p.value)}</td>`
+      + `<td>${stockPriceCell(p)}</td>`
+      + `<td>${fmtEUR0.format(p.revenue_expected || 0)}</td>`
+      + `<td>${fmtEUR0.format(p.margin_expected || 0)}</td>`;
+    svBody.appendChild(tr);
+  });
+
+  const labels = payload.window.labels;
+  const cm = payload.current_month;
+  const chartLabels = cm ? labels.concat([cm.label + '*']) : labels;
+  const movIn = cm ? payload.movements.in.concat([cm.movements_in]) : payload.movements.in;
+  const movOut = cm ? payload.movements.out.concat([cm.movements_out]) : payload.movements.out;
+  const cmNote = cm
+    ? ' * ' + cm.label + ' loopt nog: stand t/m dag ' + cm.day_of_month + ' van ' + cm.days_in_month
+      + ' (' + cm.elapsed_pct + '% van de maand). Die kolom telt niet mee in de dekkingsberekening hierboven.'
+    : '';
+
+  document.getElementById('sub-movements').textContent = 'Per maand (stuks)';
+  document.getElementById('note-movements').textContent = 'Ontvangen = van leverancier/productie naar interne locatie. Geleverd = van interne locatie naar klant. Over ' + payload.window.label_text + '.' + cmNote;
+  drawMovementsBar('chart-movements', chartLabels, movIn, movOut, css('--series-1'), css('--series-2'), !!cm);
+}
+
+async function loadInventoryData(forceRefresh){
+  try{
+    document.getElementById('inventory-skeleton').style.display = 'block';
+    document.getElementById('inventory-app').style.display = 'none';
+    document.getElementById('inventory-banner-error').style.display = 'none';
+    const resp = await fetch('/api/inventory' + periodQuery(forceRefresh));
+    if (!resp.ok){
+      const body = await resp.json().catch(()=>({detail: resp.statusText}));
+      throw new Error(body.detail || resp.statusText);
+    }
+    const payload = await resp.json();
+    inventoryLoaded = true;
+    renderInventory(payload);
+  } catch (err){
+    document.getElementById('inventory-skeleton').style.display = 'none';
+    document.getElementById('inventory-app').style.display = 'none';
+    const errBanner = document.getElementById('inventory-banner-error');
+    errBanner.style.display = 'block';
+    errBanner.textContent = 'Kon de voorraaddata niet laden: ' + err.message;
+  }
+}
+
+async function loadData(forceRefresh){
+  try{
+    document.getElementById('skeleton').style.display = 'block';
+    const resp = await fetch('/api/kpis' + periodQuery(forceRefresh));
+    if (!resp.ok){
+      const body = await resp.json().catch(()=>({detail: resp.statusText}));
+      throw new Error(body.detail || resp.statusText);
+    }
+    const payload = await resp.json();
+    render(payload);
+  } catch (err){
+    document.getElementById('skeleton').style.display = 'none';
+    document.getElementById('app').style.display = 'none';
+    const errBanner = document.getElementById('banner-error');
+    errBanner.style.display = 'block';
+    errBanner.textContent = 'Kon het dashboard niet laden: ' + err.message;
+  }
+}
+
+// --- Periodekeuze ----------------------------------------------------------
+// De keuze wordt in de browser onthouden, zodat je 'm niet elke keer opnieuw hoeft te
+// zetten. Twee vormen: een vast aantal hele maanden, of een eigen van-tot (die op de
+// server wordt afgerond op hele maanden — halve maanden zouden de maandgrafieken en de
+// gemiddelden vertekenen).
+const PERIOD_STORAGE_KEY = 'basetime_periode_v1';
+const PERIOD_PRESETS = [3, 6, 7, 12, 24];
+let currentPeriod = loadPeriod();
+
+function loadPeriod(){
+  try {
+    const stored = JSON.parse(localStorage.getItem(PERIOD_STORAGE_KEY) || 'null');
+    if (stored && (stored.months || (stored.from && stored.to))) return stored;
+  } catch (e) { /* onleesbare opslag: val terug op de standaard */ }
+  return { months: 7 };
+}
+
+function savePeriod(period){
+  try { localStorage.setItem(PERIOD_STORAGE_KEY, JSON.stringify(period)); } catch (e) {}
+}
+
+function periodQuery(forceRefresh){
+  const parts = [];
+  if (forceRefresh) parts.push('refresh=1');
+  if (currentPeriod.months) parts.push('months=' + currentPeriod.months);
+  else if (currentPeriod.from && currentPeriod.to){
+    parts.push('date_from=' + currentPeriod.from);
+    parts.push('date_to=' + currentPeriod.to);
+  }
+  return parts.length ? '?' + parts.join('&') : '';
+}
+
+function syncPeriodControls(){
+  PERIOD_PRESETS.forEach(m => {
+    const btn = document.getElementById('period-btn-' + m);
+    if (btn) btn.classList.toggle('active', currentPeriod.months === m);
+  });
+  if (currentPeriod.from) document.getElementById('period-from').value = currentPeriod.from;
+  if (currentPeriod.to) document.getElementById('period-to').value = currentPeriod.to;
+}
+
+// Na elke periodewissel opnieuw laden. Het Voorraad-tabje alleen als het al eens
+// geopend is — anders halen we data op die niemand bekijkt.
+function reloadForPeriod(){
+  savePeriod(currentPeriod);
+  syncPeriodControls();
+  loadData(false);
+  if (inventoryLoaded) loadInventoryData(false);
+  // de doorklikschermen golden voor de vorige periode, dus die cache moet leeg
+  Object.keys(detailCache).forEach(k => delete detailCache[k]);
+  detailState.rawData = null;
+}
+
+function setPeriodMonths(months){
+  currentPeriod = { months: months };
+  reloadForPeriod();
+}
+
+function applyPeriodRange(){
+  const from = document.getElementById('period-from').value;
+  const to = document.getElementById('period-to').value;
+  if (!from || !to){
+    alert('Vul zowel een begin- als een einddatum in.');
+    return;
+  }
+  if (from > to){
+    alert('De begindatum ligt na de einddatum.');
+    return;
+  }
+  currentPeriod = { from: from, to: to };
+  reloadForPeriod();
+}
+
+syncPeriodControls();
+loadData(false);
+</script>
+</body>
+</html>
