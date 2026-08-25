@@ -709,9 +709,18 @@ def _open_totals(states: dict, moment: str, catalog: dict) -> tuple[int, float]:
     return count, round(value, 2)
 
 
-def fetch_pipeline_movement(client: OdooClient, windows: list[tuple[date, date]]) -> dict:
+def fetch_pipeline_movement(
+    client: OdooClient,
+    windows: list[tuple[date, date]],
+    partial_last: bool = False,
+) -> dict:
     """Per maand: hoe de open pijplijn zich heeft ontwikkeld, uitgesplitst naar nieuw,
-    vooruit, achteruit, gewonnen, verloren en heropend."""
+    vooruit, achteruit, gewonnen, verloren en heropend.
+
+    Met `partial_last` telt de laatste window als de LOPENDE maand: die loopt tot en met
+    vandaag, dus `open_end` daarvan is de stand van het orderboek op dit moment — hetzelfde
+    getal als de pipelinetegel bovenaan het dashboard. Die maand wordt gemarkeerd zodat de
+    grafiek en de tabel 'm als onaf kunnen tonen en de winratio 'm kan overslaan."""
     states, _meta, catalog, checkpoints = _pipeline_states(client, windows)
 
     months = []
@@ -741,6 +750,7 @@ def fetch_pipeline_movement(client: OdooClient, windows: list[tuple[date, date]]
                 "open_start": {"count": open_start_count, "value": open_start_value},
                 "open_end": {"count": open_end_count, "value": open_end_value},
                 "net_value": round(open_end_value - open_start_value, 2),
+                "partial": bool(partial_last) and i == len(windows) - 1,
             }
         )
     return {"months": months, "categories": MOVEMENT_CATEGORIES}
@@ -1358,7 +1368,7 @@ DETAIL_FETCHERS = {
         client, _detail_windows(period)
     ),
     "pipeline_movement": lambda client, period: fetch_pipeline_movement_detail(
-        client, resolve_windows(**(period or {}))[0]
+        client, _detail_windows(period)
     ),
 }
 
@@ -1423,7 +1433,10 @@ def build_dashboard_payload(
     backlog = fetch_purchase_backlog(client)
     pipeline = fetch_pipeline(client, config.TOP_PIPELINE_DEALS, config.TOP_CUSTOMERS_N)
     aging = fetch_ar_ap_aging(client, config.TOP_CUSTOMERS_N)
-    pipeline_movement = fetch_pipeline_movement(client, windows)
+    # De pijplijngrafiek loopt bewust wél door tot vandaag: het orderboek is een
+    # momentopname, geen periodecijfer, dus zonder de lopende maand mist precies de
+    # stand van nu — het getal dat ook in de pipelinetegel hierboven staat.
+    pipeline_movement = fetch_pipeline_movement(client, all_windows, partial_last=has_current)
     customer_concentration = fetch_customer_revenue_concentration(
         client, config.CONCENTRATION_MONTHS_LOOKBACK, config.TOP_CUSTOMERS_N
     )

@@ -581,7 +581,7 @@ def test_build_dashboard_payload_excludes_current_month_from_averages(monkeypatc
     monkeypatch.setattr(kpis, "fetch_pipeline", lambda c, a, b: {})
     monkeypatch.setattr(kpis, "fetch_ar_ap_aging", lambda c, n: {})
     monkeypatch.setattr(kpis, "fetch_customer_revenue_concentration", lambda c, m, n: {})
-    monkeypatch.setattr(kpis, "fetch_pipeline_movement", lambda c, w: {"months": [], "categories": []})
+    monkeypatch.setattr(kpis, "fetch_pipeline_movement", lambda c, w, partial_last=False: {"months": [], "categories": []})
     monkeypatch.setattr(kpis, "fetch_order_intake_deferred", lambda c, w: [0.0] * len(w))
     monkeypatch.setattr(kpis, "fetch_deferred_revenue_balance", lambda c: 222463.88)
 
@@ -940,7 +940,7 @@ def test_build_dashboard_payload_omits_current_month_for_a_historic_period(monke
     monkeypatch.setattr(kpis, "fetch_pipeline", lambda c, a, b: {})
     monkeypatch.setattr(kpis, "fetch_ar_ap_aging", lambda c, n: {})
     monkeypatch.setattr(kpis, "fetch_customer_revenue_concentration", lambda c, m, n: {})
-    monkeypatch.setattr(kpis, "fetch_pipeline_movement", lambda c, w: {"months": [], "categories": []})
+    monkeypatch.setattr(kpis, "fetch_pipeline_movement", lambda c, w, partial_last=False: {"months": [], "categories": []})
     monkeypatch.setattr(kpis, "fetch_order_intake_deferred", lambda c, w: [0.0] * len(w))
     monkeypatch.setattr(kpis, "fetch_deferred_revenue_balance", lambda c: 222463.88)
 
@@ -1128,7 +1128,7 @@ def test_dashboard_payload_splits_order_intake_into_direct_and_deferred(monkeypa
     monkeypatch.setattr(kpis, "fetch_pipeline", lambda c, a, b: {})
     monkeypatch.setattr(kpis, "fetch_ar_ap_aging", lambda c, n: {})
     monkeypatch.setattr(kpis, "fetch_customer_revenue_concentration", lambda c, m, n: {})
-    monkeypatch.setattr(kpis, "fetch_pipeline_movement", lambda c, w: {"months": [], "categories": []})
+    monkeypatch.setattr(kpis, "fetch_pipeline_movement", lambda c, w, partial_last=False: {"months": [], "categories": []})
 
     payload = kpis.build_dashboard_payload()
 
@@ -1137,3 +1137,30 @@ def test_dashboard_payload_splits_order_intake_into_direct_and_deferred(monkeypa
     assert payload["order_intake_deferred"] == [20000.0, 25000.0]
     assert payload["order_intake_direct"] == [60000.0, 65000.0]
     assert payload["deferred_revenue_balance"] == 222463.88
+
+
+def test_pipeline_movement_marks_the_running_month_and_ends_at_todays_standing():
+    """Het orderboek is een momentopname, geen periodecijfer. De laatste kolom moet de
+    stand van vandaag zijn — hetzelfde bedrag dat de pipelinetegel toont — en als lopend
+    gemarkeerd staan zodat de winratio 'm overslaat."""
+    leads = [
+        (1, "Quotation (50%)", 500000.0, "2026-01-05 09:00:00", True),
+        (2, "Negotiation (75%)", 250000.0, "2026-01-05 09:00:00", True),
+    ]
+    windows = kpis.complete_month_windows(1) + [kpis.current_month_window()]
+    movement = kpis.fetch_pipeline_movement(
+        _pipeline_client_full(leads, []), windows, partial_last=True
+    )
+    volle_maand, lopend = movement["months"]
+
+    assert volle_maand["partial"] is False
+    assert lopend["partial"] is True
+    # geen wijzigingen, dus de stand van nu is gewoon de som van de open kansen
+    assert lopend["open_end"]["value"] == 750000.0
+    assert lopend["open_end"]["count"] == 2
+
+
+def test_pipeline_movement_without_partial_flag_marks_nothing_as_running():
+    leads = [(1, "Quotation (50%)", 1000.0, "2026-01-05 09:00:00", True)]
+    movement = kpis.fetch_pipeline_movement(_pipeline_client_full(leads, []), JULY)
+    assert movement["months"][0]["partial"] is False

@@ -1408,10 +1408,21 @@ function drawPipelineCurve(svgId, months){
   }
 
   const pts = values.map((v,i) => [ML + i*stepX, MT + plotH - ((v-lo)/range)*plotH]);
-  s += `<path d="${pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  // loopt de reeks door tot vandaag, dan is het laatste punt een tussenstand: het
+  // slotstuk gestippeld en het punt hol, net als bij de andere grafieken
+  const lastPartial = !!(months[months.length-1] || {}).partial;
+  const solid = (lastPartial && pts.length > 1) ? pts.slice(0, -1) : pts;
+  s += `<path d="${solid.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  if (lastPartial && pts.length > 1){
+    const a = pts[pts.length-2], b = pts[pts.length-1];
+    s += `<path d="M${a[0].toFixed(1)},${a[1].toFixed(1)} L${b[0].toFixed(1)},${b[1].toFixed(1)}" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="4 3" stroke-linecap="round" opacity="0.7"/>`;
+  }
   pts.forEach((p,i) => {
-    s += `<circle data-tip="${months[i].label}|Open pijplijn|${fmtEUR0.format(values[i])}" cx="${p[0]}" cy="${p[1]}" r="4.5" fill="${color}" stroke="${css('--surface-1')}" stroke-width="2"/>`;
-    s += `<text class="axis-label" x="${p[0]}" y="${H-8}" text-anchor="middle">${months[i].label}</text>`;
+    const isPartial = !!months[i].partial;
+    const label = months[i].label + (isPartial ? '*' : '');
+    const tip = isPartial ? months[i].label + ' (stand vandaag)' : months[i].label;
+    s += `<circle data-tip="${tip}|Open pijplijn|${fmtEUR0.format(values[i])}" cx="${p[0]}" cy="${p[1]}" r="4.5" fill="${isPartial ? css('--surface-1') : color}" stroke="${isPartial ? color : css('--surface-1')}" stroke-width="2"/>`;
+    s += `<text class="axis-label${isPartial?' partial':''}" x="${p[0]}" y="${H-8}" text-anchor="middle">${label}</text>`;
   });
   const lastp = pts[pts.length-1];
   s += `<text class="data-label" x="${lastp[0]+10}" y="${lastp[1]+4}">${fmtEUR0.format(values[values.length-1])}</text>`;
@@ -1439,7 +1450,8 @@ function renderPipelineMovement(movement){
     const b = m.buckets || {};
     const netClass = m.net_value > 0 ? 'net-up' : (m.net_value < 0 ? 'net-down' : '');
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td class="name">${m.label}</td>`
+    const rowLabel = m.partial ? `<i>${m.label}*</i>` : m.label;
+    tr.innerHTML = `<td class="name">${rowLabel}</td>`
       + `<td>${fmtEUR0.format(m.open_start.value)}</td>`
       + `<td>${cell(b['nieuw'])}</td>`
       + `<td>${cell(b['vooruit'])}</td>`
@@ -1454,15 +1466,23 @@ function renderPipelineMovement(movement){
   // de curve: stand aan het eind van elke maand
   drawPipelineCurve('chart-pipeline-curve', movement.months);
 
-  const totalWon = movement.months.reduce((s,m)=>s+((m.buckets['gewonnen']||{}).count||0),0);
-  const totalLost = movement.months.reduce((s,m)=>s+((m.buckets['verloren']||{}).count||0),0);
+  // de winratio over VOLLEDIGE maanden; een halve maand zou 'm laten schommelen
+  const closedMonths = movement.months.filter(m => !m.partial);
+  const totalWon = closedMonths.reduce((s,m)=>s+((m.buckets['gewonnen']||{}).count||0),0);
+  const totalLost = closedMonths.reduce((s,m)=>s+((m.buckets['verloren']||{}).count||0),0);
   const winRate = (totalWon + totalLost) ? Math.round(totalWon/(totalWon+totalLost)*100) : null;
+  const partialMonth = movement.months.find(m => m.partial);
+  const partialNote = partialMonth
+    ? ' De laatste kolom (' + partialMonth.label + '*) is de lopende maand: die loopt tot en met vandaag, '
+      + 'dus dat eindpunt is de stand van het orderboek op dit moment — hetzelfde bedrag als de tegel '
+      + '"Gewogen pipeline" hierboven, maar dan nominaal. Die maand telt niet mee in de winratio.'
+    : '';
   document.getElementById('note-pipeline-movement').textContent =
     'Netto standverschil per maand, gereconstrueerd uit de wijzigingshistorie in Odoo: waar stond elke kans '
     + 'aan het begin van de maand en waar aan het eind. Correcties binnen dezelfde maand vallen zo weg. '
     + 'Bedragen zijn nominaal (verwachte omzet), niet gewogen — het kanspercentage wordt door Odoo niet '
-    + 'historisch bijgehouden. Over de hele periode: ' + totalWon + ' gewonnen tegen ' + totalLost + ' verloren'
-    + (winRate !== null ? ' (' + winRate + '% winratio)' : '') + '.';
+    + 'historisch bijgehouden. Over de volledige maanden: ' + totalWon + ' gewonnen tegen ' + totalLost + ' verloren'
+    + (winRate !== null ? ' (' + winRate + '% winratio)' : '') + '.' + partialNote;
 }
 
 function renderInventory(payload){
