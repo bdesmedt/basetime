@@ -99,3 +99,22 @@ FIXED_MONTHLY_COSTS = float(_get_env("FIXED_MONTHLY_COSTS", "130626"))
 SUBSCRIPTION_ACCOUNT_CODES = _get_env(
     "SUBSCRIPTION_ACCOUNT_CODES", "800500,800510,800520"
 ).split(",")
+
+# Rekeningen die in Odoo wél het type "income" hebben, maar geen omzet zijn en dus
+# buiten de netto-omzet-KPI horen. 892000 Exchange rate differences is financieel
+# resultaat; die stond eerder wél in het dashboardcijfer, waardoor de omzet een paar
+# euro afweek van Odoo's "Total Net Sales" (juli 2026: €87.965,32 vs €87.963,46).
+REVENUE_EXCLUDED_ACCOUNT_CODES = [
+    code for code in _get_env("REVENUE_EXCLUDED_ACCOUNT_CODES", "892000").split(",") if code
+]
+
+# Grootboekrekening met de overlopende (nog te nemen) omzet — voedt de tegel
+# "Nog te nemen omzet" op het dashboard.
+DEFERRED_REVENUE_ACCOUNT_CODE = _get_env("DEFERRED_REVENUE_ACCOUNT_CODE", "135000")
+
+# Producten waarvan de omzet niet direct maar gespreid valt (creditpakketten,
+# garantieverlengingen). Herkend aan het begin van de productnaam, omdat de interne
+# referentie (default_code) in deze administratie niet is ingevuld.
+DEFERRED_PRODUCT_NAME_PREFIXES = [
+    p.strip() for p in _get_env("DEFERRED_PRODUCT_NAME_PREFIXES", "CR-,SC-").split(",") if p.strip()
+]

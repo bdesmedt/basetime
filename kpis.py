@@ -194,16 +194,32 @@ def _resolve_account_ids(client: OdooClient, codes: list[str]) -> list[int]:
 
 # --- Individuele KPI-fetchers -----------------------------------------------
 
+def _resolve_account_ids_optional(client: OdooClient, codes: list[str]) -> list[int]:
+    """Zoekt rekeningen op code op, maar zonder foutmelding als ze niet bestaan — voor
+    rekeningen die je wilt UITSLUITEN. Ontbreekt zo'n rekening in een administratie,
+    dan valt er simpelweg niets uit te sluiten."""
+    if not codes:
+        return []
+    rows = client.search_read("account.account", [["code", "in", codes]], ["id"])
+    return [r["id"] for r in rows]
+
+
 def fetch_revenue_and_cogs(client: OdooClient, windows: list[tuple[date, date]]):
     start, end = windows[0][0], windows[-1][1]
+    # Koersverschillen e.d. staan in Odoo als rekeningtype "income" maar horen niet in
+    # de netto-omzet; anders wijkt het dashboardcijfer af van Odoo's Total Net Sales.
+    excluded_ids = _resolve_account_ids_optional(client, config.REVENUE_EXCLUDED_ACCOUNT_CODES)
+    revenue_domain: list[Any] = [
+        ["account_id.account_type", "=", "income"],
+        ["parent_state", "=", "posted"],
+        ["date", ">=", _iso(start)],
+        ["date", "<", _iso(end)],
+    ]
+    if excluded_ids:
+        revenue_domain.append(["account_id", "not in", excluded_ids])
     rev_rows = client.read_group(
         "account.move.line",
-        [
-            ["account_id.account_type", "=", "income"],
-            ["parent_state", "=", "posted"],
-            ["date", ">=", _iso(start)],
-            ["date", "<", _iso(end)],
-        ],
+        revenue_domain,
         ["balance"],
         ["date:month"],
     )
@@ -278,6 +294,73 @@ def fetch_order_intake(client: OdooClient, windows: list[tuple[date, date]]) -> 
         if month_key in totals:
             totals[month_key] += row.get("amount_untaxed") or 0
     return [round(totals[_iso(mstart)], 2) for mstart, _ in windows]
+
+
+def fetch_order_intake_deferred(client: OdooClient, windows: list[tuple[date, date]]) -> list[float]:
+    """Het deel van de order intake dat uit GESPREIDE producten komt: creditpakketten
+    (CR-…) en garantieverlengingen (SC-…).
+
+    Waarom dit apart staat: order intake zet de volledige contractwaarde in de maand van
+    ondertekening, terwijl de omzet van deze producten pas over de looptijd valt via de
+    overlopende-omzetrekening. Over feb t/m juli 2026 ging het om €164.873 van de
+    €585.052 (28%) — zonder die splitsing lijkt het alsof order intake en omzet zouden
+    moeten aansluiten, en dat kan per definitie niet.
+
+    Herkenning gaat op het begin van de productnaam, omdat de interne referentie
+    (`default_code`) in deze administratie niet is ingevuld."""
+    prefixes = config.DEFERRED_PRODUCT_NAME_PREFIXES
+    totals: dict[str, float] = {_iso(mstart): 0.0 for mstart, _ in windows}
+    if not prefixes:
+        return [0.0 for _ in windows]
+
+    start, end = windows[0][0], windows[-1][1]
+    domain: list[Any] = [
+        ["order_id.state", "=", "sale"],
+        ["order_id.date_order", ">=", _iso(start)],
+        ["order_id.date_order", "<", _iso(end)],
+    ]
+    # Odoo-domeinen staan in prefixnotatie: (n-1) keer "|" vóór de n naamvoorwaarden.
+    name_clauses: list[Any] = [["product_id.name", "=like", f"{p}%"] for p in prefixes]
+    domain.extend(["|"] * (len(name_clauses) - 1))
+    domain.extend(name_clauses)
+
+    lines = client.search_read("sale.order.line", domain, ["order_id", "price_subtotal"])
+    if not lines:
+        return [0.0 for _ in windows]
+
+    # de orderregel kent zijn eigen orderdatum niet, dus die halen we er los bij
+    order_ids = list({l["order_id"][0] for l in lines if l.get("order_id")})
+    orders = client.search_read("sale.order", [["id", "in", order_ids]], ["date_order"])
+    date_by_order = {o["id"]: (o.get("date_order") or "")[:10] for o in orders}
+
+    for line in lines:
+        if not line.get("order_id"):
+            continue
+        day = date_by_order.get(line["order_id"][0])
+        if not day:
+            continue
+        d = datetime.strptime(day, "%Y-%m-%d").date()
+        month_key = _iso(date(d.year, d.month, 1))
+        if month_key in totals:
+            totals[month_key] += line.get("price_subtotal") or 0
+    return [round(totals[_iso(mstart)], 2) for mstart, _ in windows]
+
+
+def fetch_deferred_revenue_balance(client: OdooClient) -> float:
+    """Saldo op de overlopende-omzetrekening: al gefactureerd, nog niet als omzet
+    genomen. Dit is de brug tussen order intake (volledige contractwaarde ineens) en
+    de omzet per maand."""
+    ids = _resolve_account_ids_optional(client, [config.DEFERRED_REVENUE_ACCOUNT_CODE])
+    if not ids:
+        return 0.0
+    rows = client.read_group(
+        "account.move.line",
+        [["account_id", "in", ids], ["parent_state", "=", "posted"]],
+        ["balance"],
+        ["account_id"],
+    )
+    # creditsaldo (negatief) = nog te nemen omzet; als positief bedrag tonen
+    return round(-sum((r.get("balance") or 0) for r in rows), 2)
 
 
 def fetch_cashflow(client: OdooClient, windows: list[tuple[date, date]]):
@@ -458,12 +541,11 @@ def _fetch_lead_stage_history(client: OdooClient, since: date) -> dict[int, dict
     # was, dus vergelijken we op id.
     field_rows = client.search_read(
         "ir.model.fields",
-        [["model", "=", "crm.lead"], ["name", "in", ["stage_id", "expected_revenue"]]],
+        [["model", "=", "crm.lead"], ["name", "in", ["stage_id", "expected_revenue", "active"]]],
         ["name"],
     )
-    field_kind = {
-        f["id"]: ("stage" if f["name"] == "stage_id" else "revenue") for f in field_rows
-    }
+    kind_by_name = {"stage_id": "stage", "expected_revenue": "revenue", "active": "active"}
+    field_kind = {f["id"]: kind_by_name[f["name"]] for f in field_rows if f["name"] in kind_by_name}
     if not field_kind:
         return {}
 
@@ -477,6 +559,8 @@ def _fetch_lead_stage_history(client: OdooClient, since: date) -> dict[int, dict
         [
             "mail_message_id", "field_id", "create_date",
             "old_value_char", "new_value_char", "old_value_float", "new_value_float",
+            # booleans (zoals `active`) legt Odoo vast in de integer-kolommen
+            "old_value_integer", "new_value_integer",
         ],
     )
     if not rows:
@@ -496,7 +580,7 @@ def _fetch_lead_stage_history(client: OdooClient, since: date) -> dict[int, dict
         field = field_kind.get(row["field_id"][0])
         if not lead_id or not field:
             continue
-        entry = history.setdefault(lead_id, {"stage": [], "revenue": []})
+        entry = history.setdefault(lead_id, {"stage": [], "revenue": [], "active": []})
         entry[field].append(
             {
                 "at": row.get("create_date") or "",
@@ -504,11 +588,13 @@ def _fetch_lead_stage_history(client: OdooClient, since: date) -> dict[int, dict
                 "new_char": row.get("new_value_char") or "",
                 "old_float": row.get("old_value_float") or 0.0,
                 "new_float": row.get("new_value_float") or 0.0,
+                "old_bool": bool(row.get("old_value_integer")),
+                "new_bool": bool(row.get("new_value_integer")),
             }
         )
     for entry in history.values():
-        entry["stage"].sort(key=lambda c: c["at"])
-        entry["revenue"].sort(key=lambda c: c["at"])
+        for changes in entry.values():
+            changes.sort(key=lambda c: c["at"])
     return history
 
 
@@ -521,6 +607,24 @@ def _value_at(changes: list[dict], moment: str, current, key_old: str):
     return current
 
 
+def _stage_flags(state: dict | None, catalog: dict[str, dict]) -> tuple[bool, bool]:
+    """(gewonnen, verloren) voor een gereconstrueerde stand.
+
+    Een kans geldt als VERLOREN zodra hij gearchiveerd is óf in een verloren-fase staat.
+    Beide voorwaarden zijn nodig, en dat is niet theoretisch:
+      - 263 kansen staan gearchiveerd in een nog open fase (samen €13,65 mln). Alleen op
+        de fasenaam kijken telde die allemaal als open pijplijn mee.
+      - lead 2999 staat andersom: `active = true` terwijl hij in Closed lost zit. Alleen
+        op de archiefvlag kijken zou hém juist als open pijplijn meetellen.
+    """
+    if state is None:
+        return (False, False)
+    stage = catalog.get((state.get("stage") or "").lower(), {})
+    won = bool(stage.get("is_won"))
+    lost = bool(stage.get("is_lost")) or not state.get("active", True)
+    return (won, lost and not won)
+
+
 def _classify_movement(before: dict | None, after: dict | None, catalog: dict[str, dict]) -> str | None:
     """Bepaalt wat er met één kans in één maand is gebeurd. Gewonnen/verloren gaan vóór
     alle andere categorieën: een kans die in dezelfde maand binnenkwam én gewonnen werd,
@@ -528,11 +632,8 @@ def _classify_movement(before: dict | None, after: dict | None, catalog: dict[st
     if after is None:
         return None  # bestond aan het eind van de maand niet (meer)
 
-    after_stage = catalog.get((after["stage"] or "").lower(), {})
-    before_stage = catalog.get(((before or {}).get("stage") or "").lower(), {}) if before else {}
-
-    after_won, after_lost = after_stage.get("is_won"), after_stage.get("is_lost")
-    before_won, before_lost = before_stage.get("is_won"), before_stage.get("is_lost")
+    after_won, after_lost = _stage_flags(after, catalog)
+    before_won, before_lost = _stage_flags(before, catalog)
 
     if after_won and not before_won:
         return WON_CATEGORY
@@ -544,7 +645,9 @@ def _classify_movement(before: dict | None, after: dict | None, catalog: dict[st
         return "heropend"
     if before["stage"] == after["stage"]:
         return None  # zelfde fase: geen beweging (waardewijzigingen tellen we apart)
-    if after_stage.get("sequence", 0) > before_stage.get("sequence", 0):
+    after_seq = catalog.get((after["stage"] or "").lower(), {}).get("sequence", 0)
+    before_seq = catalog.get((before["stage"] or "").lower(), {}).get("sequence", 0)
+    if after_seq > before_seq:
         return "vooruit"
     return "achteruit"
 
@@ -552,21 +655,25 @@ def _classify_movement(before: dict | None, after: dict | None, catalog: dict[st
 def _pipeline_states(client: OdooClient, windows: list[tuple[date, date]]):
     """Reconstrueert per kans de fase en verwachte omzet op elke maandgrens."""
     catalog = _fetch_stage_catalog(client)
+    # Gearchiveerde kansen moeten mee opgehaald worden: zonder die is een verloren deal
+    # onzichtbaar. Ze worden verderop wel als gesloten behandeld, niet als open pijplijn.
     leads = client.search_read(
         "crm.lead",
         [["type", "=", "opportunity"], ["active", "in", [True, False]]],
-        ["name", "stage_id", "partner_id", "expected_revenue", "create_date"],
+        ["name", "stage_id", "partner_id", "expected_revenue", "create_date", "active"],
     )
     history = _fetch_lead_stage_history(client, windows[0][0])
 
     checkpoints = [_iso(w[0]) for w in windows] + [_iso(windows[-1][1])]
     states: dict[int, dict[str, dict | None]] = {}
     meta: dict[int, dict] = {}
+    empty = {"stage": [], "revenue": [], "active": []}
     for lead in leads:
         lead_id = lead["id"]
-        changes = history.get(lead_id, {"stage": [], "revenue": []})
+        changes = history.get(lead_id, empty)
         current_stage = lead["stage_id"][1] if lead.get("stage_id") else ""
         current_revenue = lead.get("expected_revenue") or 0.0
+        current_active = bool(lead.get("active"))
         created = (lead.get("create_date") or "")[:19]
         meta[lead_id] = {
             "name": lead.get("name") or "",
@@ -578,22 +685,24 @@ def _pipeline_states(client: OdooClient, windows: list[tuple[date, date]]):
                 per_checkpoint[moment] = None  # bestond toen nog niet
                 continue
             per_checkpoint[moment] = {
-                "stage": _value_at(changes["stage"], moment, current_stage, "old_char"),
-                "revenue": _value_at(changes["revenue"], moment, current_revenue, "old_float"),
+                "stage": _value_at(changes.get("stage", []), moment, current_stage, "old_char"),
+                "revenue": _value_at(changes.get("revenue", []), moment, current_revenue, "old_float"),
+                "active": _value_at(changes.get("active", []), moment, current_active, "old_bool"),
             }
         states[lead_id] = per_checkpoint
     return states, meta, catalog, checkpoints
 
 
 def _open_totals(states: dict, moment: str, catalog: dict) -> tuple[int, float]:
-    """Aantal en nominale waarde van de nog OPEN kansen op een moment."""
+    """Aantal en nominale waarde van de nog OPEN kansen op een moment: niet gewonnen,
+    niet verloren en niet gearchiveerd."""
     count, value = 0, 0.0
     for per_checkpoint in states.values():
         state = per_checkpoint.get(moment)
         if not state:
             continue
-        stage = catalog.get((state["stage"] or "").lower(), {})
-        if stage.get("is_won") or stage.get("is_lost"):
+        won, lost = _stage_flags(state, catalog)
+        if won or lost:
             continue
         count += 1
         value += state["revenue"] or 0.0
@@ -679,15 +788,23 @@ def fetch_ar_ap_aging(client: OdooClient, top_n: int) -> dict:
                 ["parent_state", "=", "posted"],
                 ["reconciled", "=", False],
             ],
-            ["partner_id", "date_maturity", "date", "amount_residual"],
+            ["partner_id", "date_maturity", "date", "amount_residual", "move_type"],
         )
         buckets: dict[str, float] = {label: 0.0 for label in AGING_BUCKET_ORDER}
         by_partner: dict[str, float] = {}
         total = 0.0
+        # Deel dat NIET uit een factuur komt maar uit een losse journaalpost. Odoo's
+        # factuuroverzichten laten die buiten beschouwing, waardoor het dashboard een
+        # ander totaal gaf dan de klant in Odoo zag. We laten ze wél meetellen (het is
+        # echt openstaand), maar rapporteren het bedrag apart zodat de aansluiting met
+        # Odoo zichzelf verklaart.
+        manual_entries = 0.0
         for row in rows:
             amount = sign * (row.get("amount_residual") or 0)
             if not amount:
                 continue
+            if row.get("move_type") == "entry":
+                manual_entries += amount
             due_str = row.get("date_maturity") or row.get("date")
             days_overdue = None
             if due_str:
@@ -702,6 +819,8 @@ def fetch_ar_ap_aging(client: OdooClient, top_n: int) -> dict:
         top_partners = sorted(by_partner.items(), key=lambda kv: -kv[1])[:top_n]
         return {
             "total": round(total, 2),
+            "manual_entries": round(manual_entries, 2),
+            "invoices_only": round(total - manual_entries, 2),
             "buckets": [
                 {"label": label, "amount": round(buckets[label], 2)}
                 for label in AGING_BUCKET_ORDER
@@ -1274,6 +1393,7 @@ def build_dashboard_payload(
     revenue_all, cogs_all = fetch_revenue_and_cogs(client, all_windows)
     recurring_all = fetch_subscription_revenue(client, all_windows)
     orders_all = fetch_order_intake(client, all_windows)
+    orders_deferred_all = fetch_order_intake_deferred(client, all_windows)
     cashflow_all = fetch_cashflow(client, all_windows)
 
     def _split(values: list[float]) -> tuple[list[float], float | None]:
@@ -1283,7 +1403,11 @@ def build_dashboard_payload(
     cogs, cogs_mtd = _split(cogs_all)
     recurring, recurring_mtd = _split(recurring_all)
     orders, orders_mtd = _split(orders_all)
+    orders_deferred, orders_deferred_mtd = _split(orders_deferred_all)
     cashflow, cashflow_mtd = _split(cashflow_all)
+
+    # order intake gesplitst: gespreid (credits/garantie) versus direct (hardware e.d.)
+    orders_direct = [round(t - d, 2) for t, d in zip(orders, orders_deferred)]
 
     margin = [
         round((r - c) / r * 100, 1) if r else 0.0 for r, c in zip(revenue, cogs)
@@ -1295,6 +1419,7 @@ def build_dashboard_payload(
     )
 
     bank_now = fetch_bank_balance_now(client)
+    deferred_balance = fetch_deferred_revenue_balance(client)
     backlog = fetch_purchase_backlog(client)
     pipeline = fetch_pipeline(client, config.TOP_PIPELINE_DEALS, config.TOP_CUSTOMERS_N)
     aging = fetch_ar_ap_aging(client, config.TOP_CUSTOMERS_N)
@@ -1353,6 +1478,10 @@ def build_dashboard_payload(
         "recurring_revenue_avg": avg_recurring,
         "order_intake": orders,
         "order_intake_sum": round(sum(orders), 2),
+        "order_intake_direct": orders_direct,
+        "order_intake_deferred": orders_deferred,
+        "order_intake_deferred_sum": round(sum(orders_deferred), 2),
+        "deferred_revenue_balance": deferred_balance,
         "cashflow": cashflow,
         "cashflow_avg": avg_cashflow,
         "purchase_backlog": backlog,
@@ -1376,6 +1505,10 @@ def build_dashboard_payload(
             "margin_pct": margin_mtd,
             "recurring_revenue": recurring_mtd,
             "order_intake": orders_mtd,
+            "order_intake_deferred": orders_deferred_mtd,
+            "order_intake_direct": (
+                round((orders_mtd or 0) - (orders_deferred_mtd or 0), 2) if has_current else None
+            ),
             "cashflow": cashflow_mtd,
         } if has_current else None,
     }

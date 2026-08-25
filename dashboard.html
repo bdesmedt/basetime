@@ -271,6 +271,10 @@
           <button class="detail-link" onclick="openDetailModal('order_intake')">Bekijk alle orders →</button>
         </div>
         <p class="chart-sub" id="sub-orders"></p>
+        <div class="legend">
+          <span class="key"><span class="swatch" style="background:var(--series-1)"></span>direct (hardware, accessoires)</span>
+          <span class="key"><span class="swatch" style="background:var(--series-2)"></span>gespreid (credits, garantie)</span>
+        </div>
         <svg id="chart-orders" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
       </div>
       <div class="chart-card">
@@ -330,6 +334,11 @@
     <h2 class="section">Beweging in de pijplijn per maand</h2>
     <p class="section-note" id="note-pipeline-movement"></p>
     <div class="charts">
+      <div class="chart-card" style="grid-column: 1 / -1;">
+        <h3>Openstaande pijplijn per maand-einde</h3>
+        <p class="chart-sub">Nominale waarde (€) van de kansen die op dat moment nog open stonden</p>
+        <svg id="chart-pipeline-curve" width="100%" height="230" viewBox="0 0 1080 230" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
       <div class="chart-card" style="grid-column: 1 / -1;">
         <div class="heading-row">
           <h3>Wat er per maand veranderde</h3>
@@ -786,6 +795,47 @@ function drawBar(svgId, labels, series, color, fmtValue, diverging, partialLast)
   attachTooltips(svg);
 }
 
+// Gestapelde staaf voor order intake: onderop het deel waarvan de omzet direct valt,
+// bovenop het deel dat via de overlopende omzet over de looptijd wordt genomen. Tussen
+// de segmenten een gaatje in de achtergrondkleur — dat scheidt beter dan een randje.
+function drawStackedBar(svgId, labels, seriesBottom, seriesTop, colorBottom, colorTop, fmtValue, partialLast){
+  const svg = document.getElementById(svgId);
+  const W=520,H=220, ML=8, MR=8, MT=14, MB=28;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  const totals = labels.map((_,i)=>(seriesBottom[i]||0)+(seriesTop[i]||0));
+  const maxV = Math.max(...totals, 1) * 1.12;
+  const bandW = plotW/labels.length;
+  const barW = Math.min(24, bandW*0.5);
+  const GAP = 2;
+  let s = `<g>`;
+  for(let g=0;g<=4;g++){
+    const y = MT + plotH - g*plotH/4;
+    s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+    s += `<text class="axis-label" x="${ML}" y="${y-3}">${fmtEURK(g*maxV/4)}</text>`;
+  }
+  labels.forEach((lab,i)=>{
+    const cx = ML + bandW*i + bandW/2;
+    const isPartial = !!partialLast && i === labels.length-1;
+    const tl = tipLabel(lab, isPartial);
+    const bottom = seriesBottom[i] || 0, top = seriesTop[i] || 0;
+    const hBottom = bottom/maxV*plotH;
+    const hTop = top/maxV*plotH;
+    const yBottom = MT+plotH-hBottom;
+    if (hBottom > 0){
+      s += `<rect data-tip="${tl}|Direct|${fmtValue(bottom)}" x="${cx-barW/2}" y="${yBottom}" width="${barW}" height="${hBottom}" rx="3" fill="${colorBottom}"${partialBarAttrs(isPartial, colorBottom)}/>`;
+    }
+    if (hTop > 0){
+      const yTop = yBottom - hTop - (hBottom > 0 ? GAP : 0);
+      s += `<rect data-tip="${tl}|Gespreid|${fmtValue(top)}" x="${cx-barW/2}" y="${yTop}" width="${barW}" height="${hTop}" rx="3" fill="${colorTop}"${partialBarAttrs(isPartial, colorTop)}/>`;
+    }
+    s += `<text class="axis-label${isPartial?' partial':''}" x="${cx}" y="${H-8}" text-anchor="middle">${lab}</text>`;
+  });
+  s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${MT+plotH}" y2="${MT+plotH}"/>`;
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
 function drawLine(svgId, labels, series, color, fmtValue, partialLast){
   const svg = document.getElementById(svgId);
   const W=520,H=220, ML=8, MR=8, MT=14, MB=28;
@@ -1009,6 +1059,16 @@ function render(payload){
   // laatste vólle maand en "waar staan we nu" naast elkaar ziet zonder ze te verwarren.
   const mtd = (text) => cm ? ' · ' + cm.label + ' t/m nu: ' + text : '';
   tilesBottom.appendChild(tile('Order intake — ' + lastMonthLabel, fmtEUR0.format(payload.order_intake[payload.order_intake.length-1] || 0), payload.window.label_text + ': ' + fmtEUR0.format(payload.order_intake_sum) + mtd(fmtEUR0.format(cm ? cm.order_intake : 0)), null, payload.order_intake, css('--series-1')));
+  if (payload.deferred_revenue_balance !== undefined && payload.deferred_revenue_balance !== null){
+    tilesBottom.appendChild(tile(
+      'Nog te nemen omzet',
+      fmtEUR0.format(payload.deferred_revenue_balance),
+      'al gefactureerd, valt later als omzet (overlopende omzetrekening)'
+        + (payload.order_intake_deferred_sum
+            ? ' · ' + fmtEUR0.format(payload.order_intake_deferred_sum) + ' van de order intake in deze periode is gespreid'
+            : '')
+    ));
+  }
   tilesBottom.appendChild(tile('Recurring omzet (subscription) — ' + lastMonthLabel, fmtEUR0.format(payload.recurring_revenue[payload.recurring_revenue.length-1] || 0), 'gem. ' + fmtEUR0.format(payload.recurring_revenue_avg) + ' / mnd' + mtd(fmtEUR0.format(cm ? cm.recurring_revenue : 0)), null, payload.recurring_revenue, css('--series-3')));
   tilesBottom.appendChild(tile('Brutomarge — ' + lastMonthLabel, fmtPct(payload.margin_pct[lastIdx]), payload.window.label_text + mtd(fmtPct(cm ? cm.margin_pct : 0)), null, payload.margin_pct, css('--series-1')));
 
@@ -1024,8 +1084,18 @@ function render(payload){
   const ar = payload.aging.receivables, ap = payload.aging.payables;
   const arOld = ar.buckets.find(b => b.label === '90+ dagen');
   const arOldShare = arOld && ar.total ? arOld.amount / ar.total * 100 : 0;
-  tilesRisk.appendChild(tile('Openstaande debiteuren', fmtEUR0.format(ar.total), (ar.top_partners[0] ? 'grootste: ' + ar.top_partners[0].name : 'geen openstaande posten'), null, null, null, arOldShare >= 15 ? {cls:'crit', text:'>90 dagen'} : null));
-  tilesRisk.appendChild(tile('Openstaande crediteuren', fmtEUR0.format(ap.total), (ap.top_partners[0] ? 'grootste: ' + ap.top_partners[0].name : 'geen openstaande posten')));
+  // Aansluiting met Odoo: het dashboard telt ook losse journaalposten op de
+  // debiteuren-/crediteurenrekening mee, Odoo's factuuroverzichten doen dat niet.
+  // Door dat bedrag te noemen verklaart het verschil zichzelf.
+  const reconcile = (side) => {
+    const base = side.top_partners[0] ? 'grootste: ' + side.top_partners[0].name : 'geen openstaande posten';
+    if (!side.manual_entries) return base;
+    return base + ' · Odoo toont hier ' + fmtEUR0.format(side.invoices_only)
+      + ' op basis van facturen; het verschil van ' + fmtEUR0.format(Math.abs(side.manual_entries))
+      + ' zijn losse journaalposten op deze rekening';
+  };
+  tilesRisk.appendChild(tile('Openstaande debiteuren', fmtEUR0.format(ar.total), reconcile(ar), null, null, null, arOldShare >= 15 ? {cls:'crit', text:'>90 dagen'} : null));
+  tilesRisk.appendChild(tile('Openstaande crediteuren', fmtEUR0.format(ap.total), reconcile(ap)));
 
   const cc = payload.customer_concentration;
   tilesRisk.appendChild(tile('Klantconcentratie', fmtPct(cc.top_n_share_pct), 'top ' + cc.top_customers.length + ' klanten, ' + cc.window_label, null, null, null, cc.top_n_share_pct >= 40 ? {cls:'gap', text:'geconcentreerd'} : null));
@@ -1068,16 +1138,23 @@ function render(payload){
     customersBody.appendChild(tr);
   });
 
-  document.getElementById('note-revcogs').textContent = 'Netto-omzet en kostprijs uit geboekte grootboekmutaties (rekeningtype income / expense_direct_cost), over ' + payload.window.label_text + '.' + cmNote;
+  document.getElementById('note-revcogs').textContent = 'Netto-omzet (in Odoo: \u201cTotal Net Sales\u201d) en kostprijs uit geboekte grootboekmutaties, over ' + payload.window.label_text + '. Koersverschillen staan in Odoo als omzetrekening maar tellen hier niet mee \u2014 daardoor sluit dit cijfer exact aan op Total Net Sales.' + cmNote;
   document.getElementById('sub-revcogs').textContent = 'Per maand (€)';
   document.getElementById('sub-margin').textContent = 'Per maand';
-  document.getElementById('sub-orders').textContent = 'Per maand (€, excl. btw)';
+  document.getElementById('sub-orders').textContent = 'Per maand (€, excl. btw) — direct vs. gespreid';
   document.getElementById('sub-cash').textContent = 'Per maand (€) — boven/onder nul';
 
   const partial = !!cm;
   drawGroupedBar('chart-revcogs', chartLabels, withCm(payload.revenue, cm && cm.revenue), withCm(payload.cogs, cm && cm.cogs), css('--series-1'), css('--series-2'), (v)=>fmtEUR0.format(v), partial);
   drawLine('chart-margin', chartLabels, withCm(payload.margin_pct, cm && cm.margin_pct), css('--series-1'), (v)=>fmtPct(v), partial);
-  drawBar('chart-orders', chartLabels, withCm(payload.order_intake, cm && cm.order_intake), css('--series-1'), (v)=>fmtEUR0.format(v), false, partial);
+  if (payload.order_intake_direct){
+    drawStackedBar('chart-orders', chartLabels,
+      withCm(payload.order_intake_direct, cm && cm.order_intake_direct),
+      withCm(payload.order_intake_deferred, cm && cm.order_intake_deferred),
+      css('--series-1'), css('--series-2'), (v)=>fmtEUR0.format(v), partial);
+  } else {
+    drawBar('chart-orders', chartLabels, withCm(payload.order_intake, cm && cm.order_intake), css('--series-1'), (v)=>fmtEUR0.format(v), false, partial);
+  }
   drawBar('chart-cash', chartLabels, withCm(payload.cashflow, cm && cm.cashflow), null, (v)=>fmtEUR0.format(v), true, partial);
   drawHBar('chart-pipeline', payload.pipeline.by_stage);
 
@@ -1309,6 +1386,41 @@ function stockPriceCell(p){
 // Beweging in de pijplijn: netto standverschil per maand. Bewust niet het aantal
 // fasewijzigingen — daar zit veel correctiewerk in (een kans die binnen een minuut door
 // meerdere fases wordt geklikt), en dat zou activiteit meten in plaats van voortgang.
+// Lijn van de openstaande pijplijn per maand-einde. Eén reeks, dus geen legenda —
+// de titel zegt al wat er staat; alleen het eindpunt krijgt een waarde mee.
+function drawPipelineCurve(svgId, months){
+  const svg = document.getElementById(svgId);
+  if (!svg) return;
+  if (!months.length){ svg.innerHTML = ''; return; }
+  const W=1080,H=230, ML=64, MR=90, MT=16, MB=28;
+  const plotW = W-ML-MR, plotH = H-MT-MB;
+  const values = months.map(m => m.open_end.value);
+  const lo = Math.min(...values) * 0.92, hi = Math.max(...values, 1) * 1.06;
+  const range = (hi - lo) || 1;
+  const stepX = plotW / Math.max(months.length - 1, 1);
+  const color = css('--series-1');
+
+  let s = `<g>`;
+  for (let g = 0; g <= 3; g++){
+    const y = MT + plotH - g*plotH/3;
+    s += `<line class="gridline" x1="${ML}" x2="${W-MR}" y1="${y}" y2="${y}"/>`;
+    s += `<text class="axis-label" x="${ML-10}" y="${y+4}" text-anchor="end">${fmtEURK(lo + g*range/3)}</text>`;
+  }
+
+  const pts = values.map((v,i) => [ML + i*stepX, MT + plotH - ((v-lo)/range)*plotH]);
+  s += `<path d="${pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  pts.forEach((p,i) => {
+    s += `<circle data-tip="${months[i].label}|Open pijplijn|${fmtEUR0.format(values[i])}" cx="${p[0]}" cy="${p[1]}" r="4.5" fill="${color}" stroke="${css('--surface-1')}" stroke-width="2"/>`;
+    s += `<text class="axis-label" x="${p[0]}" y="${H-8}" text-anchor="middle">${months[i].label}</text>`;
+  });
+  const lastp = pts[pts.length-1];
+  s += `<text class="data-label" x="${lastp[0]+10}" y="${lastp[1]+4}">${fmtEUR0.format(values[values.length-1])}</text>`;
+  s += `<line class="baseline" x1="${ML}" x2="${W-MR}" y1="${MT+plotH}" y2="${MT+plotH}"/>`;
+  s += `</g>`;
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
 function renderPipelineMovement(movement){
   const tbody = document.querySelector('#pipeline-movement-table tbody');
   if (!tbody) return;
@@ -1338,6 +1450,9 @@ function renderPipelineMovement(movement){
       + `<td class="${netClass}">${(m.net_value > 0 ? '+' : '') + fmtEUR0.format(m.net_value)}</td>`;
     tbody.appendChild(tr);
   });
+
+  // de curve: stand aan het eind van elke maand
+  drawPipelineCurve('chart-pipeline-curve', movement.months);
 
   const totalWon = movement.months.reduce((s,m)=>s+((m.buckets['gewonnen']||{}).count||0),0);
   const totalLost = movement.months.reduce((s,m)=>s+((m.buckets['verloren']||{}).count||0),0);

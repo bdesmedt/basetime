@@ -59,6 +59,8 @@ def test_revenue_and_cogs_matches_known_july_afsluiting_figures():
         _fake_group_row("date:month", july_start, july_end, balance=46019.18),
     ]
     client = FakeOdooClient()
+    # opzoeken van uit te sluiten rekeningen (koersverschillen): hier geen
+    client.search_read = lambda model, domain, fields, limit=0, order=None: []
     # de eerste aanroep (omzet) en tweede (kostprijs) gaan naar hetzelfde model,
     # dus we simuleren met een teller die per aanroep een andere lijst teruggeeft
     calls = {"n": 0}
@@ -523,6 +525,7 @@ def test_fetchers_return_one_extra_bucket_when_current_month_is_appended():
         _fake_group_row("date:month", current_start, current_end, balance=-500.0),
     ]
     client = FakeOdooClient()
+    client.search_read = lambda model, domain, fields, limit=0, order=None: []
     calls = {"n": 0}
 
     def read_group(model, domain, fields, groupby):
@@ -579,6 +582,8 @@ def test_build_dashboard_payload_excludes_current_month_from_averages(monkeypatc
     monkeypatch.setattr(kpis, "fetch_ar_ap_aging", lambda c, n: {})
     monkeypatch.setattr(kpis, "fetch_customer_revenue_concentration", lambda c, m, n: {})
     monkeypatch.setattr(kpis, "fetch_pipeline_movement", lambda c, w: {"months": [], "categories": []})
+    monkeypatch.setattr(kpis, "fetch_order_intake_deferred", lambda c, w: [0.0] * len(w))
+    monkeypatch.setattr(kpis, "fetch_deferred_revenue_balance", lambda c: 222463.88)
 
     payload = kpis.build_dashboard_payload()
 
@@ -807,7 +812,8 @@ def _pipeline_client(leads, transitions):
         if model == "crm.lead":
             return [
                 {"id": lid, "name": f"Kans {lid}", "stage_id": [0, stage],
-                 "partner_id": False, "expected_revenue": rev, "create_date": created}
+                 "partner_id": False, "expected_revenue": rev, "create_date": created,
+                 "active": True}
                 for lid, stage, rev, created in leads
             ]
         if model == "mail.tracking.value":
@@ -935,6 +941,8 @@ def test_build_dashboard_payload_omits_current_month_for_a_historic_period(monke
     monkeypatch.setattr(kpis, "fetch_ar_ap_aging", lambda c, n: {})
     monkeypatch.setattr(kpis, "fetch_customer_revenue_concentration", lambda c, m, n: {})
     monkeypatch.setattr(kpis, "fetch_pipeline_movement", lambda c, w: {"months": [], "categories": []})
+    monkeypatch.setattr(kpis, "fetch_order_intake_deferred", lambda c, w: [0.0] * len(w))
+    monkeypatch.setattr(kpis, "fetch_deferred_revenue_balance", lambda c: 222463.88)
 
     payload = kpis.build_dashboard_payload(
         date_from=date(2025, 11, 1), date_to=date(2026, 1, 31)
@@ -943,3 +951,189 @@ def test_build_dashboard_payload_omits_current_month_for_a_historic_period(monke
     assert payload["current_month"] is None
     assert len(payload["revenue"]) == 3  # nov, dec, jan — geen extra lopende maand
     assert len(payload["window"]["labels"]) == 3
+
+
+def _pipeline_client_full(leads, transitions):
+    """Als _pipeline_client, maar met expliciete archiefstatus per kans:
+    (id, fase, omzet, aanmaakdatum, active)."""
+    client = FakeOdooClient()
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        if model == "crm.stage":
+            return PIPELINE_STAGES
+        if model == "ir.model.fields":
+            return [{"id": STAGE_FIELD_ID, "name": "stage_id"},
+                    {"id": REVENUE_FIELD_ID, "name": "expected_revenue"},
+                    {"id": 8928, "name": "active"}]
+        if model == "crm.lead":
+            return [
+                {"id": lid, "name": f"Kans {lid}", "stage_id": [0, stage],
+                 "partner_id": False, "expected_revenue": rev, "create_date": created,
+                 "active": active}
+                for lid, stage, rev, created, active in leads
+            ]
+        if model == "mail.tracking.value":
+            return transitions
+        if model == "mail.message":
+            return [{"id": t["mail_message_id"][0], "res_id": t["_lead"]} for t in transitions]
+        raise AssertionError("onverwacht model: " + model)
+
+    client.search_read = search_read
+    return client
+
+
+def _stage_change(msg_id, lead_id, old, new, at):
+    return {"mail_message_id": [msg_id, ""], "field_id": [STAGE_FIELD_ID, "Stage"],
+            "create_date": at, "old_value_char": old, "new_value_char": new,
+            "old_value_float": 0.0, "new_value_float": 0.0,
+            "old_value_integer": 0, "new_value_integer": 0, "_lead": lead_id}
+
+
+def test_archived_opportunity_in_an_open_stage_is_not_counted_as_open_pipeline():
+    """De fout die de klant vond: 263 kansen stonden gearchiveerd in een open fase en
+    telden samen voor €13,65 mln mee als openstaande pijplijn."""
+    leads = [
+        (1, "Quotation (50%)", 500000.0, "2026-01-05 09:00:00", False),  # gearchiveerd
+        (2, "Quotation (50%)", 80000.0, "2026-01-05 09:00:00", True),    # echt open
+    ]
+    movement = kpis.fetch_pipeline_movement(_pipeline_client_full(leads, []), JULY)
+    month = movement["months"][0]
+
+    assert month["open_start"]["count"] == 1
+    assert month["open_start"]["value"] == 80000.0
+    assert month["open_end"]["value"] == 80000.0
+
+
+def test_active_opportunity_in_a_lost_stage_is_not_counted_as_open_pipeline():
+    """Het spiegelbeeld, zoals lead 2999 'Taludmeting 5 units': active = true terwijl
+    de kans in Closed lost staat. Alleen op de archiefvlag filteren zou die als open
+    pijplijn meetellen."""
+    leads = [(2999, "Closed lost (0%)", 6000.0, "2025-09-01 07:18:42", True)]
+    movement = kpis.fetch_pipeline_movement(_pipeline_client_full(leads, []), JULY)
+    month = movement["months"][0]
+
+    assert month["open_start"]["count"] == 0
+    assert month["open_end"]["value"] == 0.0
+
+
+def test_archiving_an_opportunity_counts_as_lost_in_that_month():
+    """In Odoo wordt een verloren kans doorgaans gearchiveerd zonder dat de fase
+    wijzigt. Dat moet als 'verloren' tellen in de maand van archiveren."""
+    leads = [(1, "Quotation (50%)", 40000.0, "2026-01-05 09:00:00", False)]
+    archived = [{
+        "mail_message_id": [900, ""], "field_id": [8928, "Active"],
+        "create_date": "2026-07-14 10:00:00",
+        "old_value_char": False, "new_value_char": False,
+        "old_value_float": 0.0, "new_value_float": 0.0,
+        "old_value_integer": 1, "new_value_integer": 0, "_lead": 1,
+    }]
+    movement = kpis.fetch_pipeline_movement(_pipeline_client_full(leads, archived), JULY)
+    month = movement["months"][0]
+
+    assert month["buckets"]["verloren"]["count"] == 1
+    assert month["buckets"]["verloren"]["value"] == 40000.0
+    assert month["open_start"]["value"] == 40000.0  # begin juli nog open
+    assert month["open_end"]["value"] == 0.0        # eind juli eruit
+
+
+def test_lead_2999_appears_as_lost_in_the_month_it_was_closed():
+    """Volledig doorgerekend voorbeeld met de echte historie van lead 2999."""
+    leads = [(2999, "Closed lost (0%)", 6000.0, "2025-09-01 07:18:42", True)]
+    transitions = [
+        _stage_change(131450, 2999, "Unqualified Lead", "Quotation (50%)", "2025-09-30 06:41:25"),
+        _stage_change(177424, 2999, "Quotation (50%)", "Closed lost (0%)", "2026-04-15 13:30:02"),
+    ]
+    windows = [
+        (date(2026, 3, 1), date(2026, 4, 1)),
+        (date(2026, 4, 1), date(2026, 5, 1)),
+        (date(2026, 5, 1), date(2026, 6, 1)),
+    ]
+    movement = kpis.fetch_pipeline_movement(_pipeline_client_full(leads, transitions), windows)
+    maart, april, mei = movement["months"]
+
+    assert maart["open_start"]["value"] == 6000.0        # nog open in maart
+    assert april["buckets"]["verloren"]["count"] == 1    # verloren in april
+    assert april["buckets"]["verloren"]["value"] == 6000.0
+    assert april["open_end"]["value"] == 0.0
+    assert mei["buckets"]["verloren"]["count"] == 0      # niet nogmaals in mei
+
+
+# --- Order intake: gespreide producten en overlopende omzet ------------------
+
+def test_order_intake_deferred_only_counts_credit_and_warranty_products():
+    windows = kpis.complete_month_windows(1)
+    month_start = windows[0][0]
+    client = FakeOdooClient()
+    captured = {}
+
+    def search_read(model, domain, fields, limit=0, order=None):
+        if model == "sale.order.line":
+            captured["domain"] = domain
+            return [
+                {"order_id": [10, "S001"], "price_subtotal": 2430.0},   # CR-006
+                {"order_id": [11, "S002"], "price_subtotal": 348.75},   # SC-501
+            ]
+        if model == "sale.order":
+            return [
+                {"id": 10, "date_order": f"{month_start.isoformat()} 09:00:00"},
+                {"id": 11, "date_order": f"{month_start.isoformat()} 11:00:00"},
+            ]
+        raise AssertionError("onverwacht model: " + model)
+
+    client.search_read = search_read
+    deferred = kpis.fetch_order_intake_deferred(client, windows)
+
+    assert deferred == [2778.75]
+    # het domein moet op de productnaam-prefixen filteren, met een OR ertussen
+    assert "|" in captured["domain"]
+    assert ["product_id.name", "=like", "CR-%"] in captured["domain"]
+    assert ["product_id.name", "=like", "SC-%"] in captured["domain"]
+
+
+def test_order_intake_deferred_is_zero_without_matching_lines():
+    windows = kpis.complete_month_windows(2)
+    client = FakeOdooClient()
+    client.search_read = lambda model, domain, fields, limit=0, order=None: []
+    assert kpis.fetch_order_intake_deferred(client, windows) == [0.0, 0.0]
+
+
+def test_deferred_revenue_balance_is_reported_as_a_positive_amount():
+    """De rekening staat credit (negatief); 'nog te nemen omzet' lees je als positief."""
+    client = FakeOdooClient()
+    client.search_read = lambda model, domain, fields, limit=0, order=None: [{"id": 126}]
+    client.read_group = lambda model, domain, fields, groupby: [
+        {"account_id": [126, "135000 Deferred revenue"], "balance": -222463.88}
+    ]
+    assert kpis.fetch_deferred_revenue_balance(client) == 222463.88
+
+
+def test_dashboard_payload_splits_order_intake_into_direct_and_deferred(monkeypatch):
+    monkeypatch.setattr(kpis, "get_client", lambda: FakeOdooClient())
+    monkeypatch.setattr(kpis, "complete_month_windows", lambda n: [
+        (date(2026, 6, 1), date(2026, 7, 1)),
+        (date(2026, 7, 1), date(2026, 8, 1)),
+    ])
+    monkeypatch.setattr(kpis, "current_month_window", lambda: (date(2026, 8, 1), date(2026, 8, 13)))
+    monkeypatch.setattr(kpis, "current_month_progress", lambda: {
+        "label": "aug", "day_of_month": 12, "days_in_month": 31, "elapsed_pct": 39,
+    })
+    monkeypatch.setattr(kpis, "fetch_revenue_and_cogs", lambda c, w: ([100000.0]*len(w), [40000.0]*len(w)))
+    monkeypatch.setattr(kpis, "fetch_subscription_revenue", lambda c, w: [30000.0]*len(w))
+    monkeypatch.setattr(kpis, "fetch_order_intake", lambda c, w: [80000.0, 90000.0, 10000.0])
+    monkeypatch.setattr(kpis, "fetch_order_intake_deferred", lambda c, w: [20000.0, 25000.0, 3000.0])
+    monkeypatch.setattr(kpis, "fetch_cashflow", lambda c, w: [-20000.0]*len(w))
+    monkeypatch.setattr(kpis, "fetch_bank_balance_now", lambda c: 0.0)
+    monkeypatch.setattr(kpis, "fetch_deferred_revenue_balance", lambda c: 222463.88)
+    monkeypatch.setattr(kpis, "fetch_purchase_backlog", lambda c: {})
+    monkeypatch.setattr(kpis, "fetch_pipeline", lambda c, a, b: {})
+    monkeypatch.setattr(kpis, "fetch_ar_ap_aging", lambda c, n: {})
+    monkeypatch.setattr(kpis, "fetch_customer_revenue_concentration", lambda c, m, n: {})
+    monkeypatch.setattr(kpis, "fetch_pipeline_movement", lambda c, w: {"months": [], "categories": []})
+
+    payload = kpis.build_dashboard_payload()
+
+    # de lopende maand is er afgesplitst; direct + gespreid telt op tot het totaal
+    assert payload["order_intake"] == [80000.0, 90000.0]
+    assert payload["order_intake_deferred"] == [20000.0, 25000.0]
+    assert payload["order_intake_direct"] == [60000.0, 65000.0]
+    assert payload["deferred_revenue_balance"] == 222463.88
