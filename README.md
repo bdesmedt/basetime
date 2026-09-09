@@ -15,13 +15,17 @@ overzicht van de grootste verschuivingen en doorklik naar de boekingsregels),
 - **Backend**: Python (FastAPI), praat met Odoo via de officiële externe XML-RPC-API.
 - **Frontend**: één HTML-pagina (in `app/templates/dashboard.html`), haalt de cijfers op
   via `/api/kpis` en tekent de tabellen/grafieken in de browser — geen build-stap nodig.
-- **Beveiliging**: de hele site staat achter HTTP basic-auth (gebruikersnaam/wachtwoord).
+- **Beveiliging**: iedereen logt persoonlijk in en heeft een rol (Manager / Financieel /
+  Beheerder). De rechten worden per API-endpoint gecontroleerd, niet in het scherm — zie
+  stap 4d. Het account uit `DASHBOARD_USER` / `DASHBOARD_PASSWORD` blijft bestaan als
+  beheerder die altijd werkt, ook zonder database.
 - **Cache**: opgehaalde cijfers blijven 15 minuten warm (instelbaar), zodat niet elke
   paginabezoek meteen Odoo belast. Een "Vernieuwen"-knop op het dashboard forceert een
   verse ophaal-actie.
-- **Database**: nodig voor de eigen rubrieksindeling van de W&V-tab (stap 4b) en voor het
-  vastleggen van standen door de tijd (stap 4c). Postgres op Railway. Alle cijfers komen
-  live uit Odoo; alleen de standen die Odoo niet kan reconstrueren worden bewaard.
+- **Database**: nodig voor de eigen rubrieksindeling van de W&V-tab (stap 4b), voor het
+  vastleggen van standen door de tijd (stap 4c), voor het betaalplan van de kasprognose en
+  voor persoonlijke accounts (stap 4d). Postgres op Railway. Alle cijfers komen live uit
+  Odoo; alleen wat Odoo niet kan reconstrueren wordt bewaard.
 
 Dit project is voortgekomen uit een concept-dashboard (los HTML-bestand met een
 momentopname) dat is besproken in het Claude-project "Basetime" — zie
@@ -107,7 +111,9 @@ Optioneel (staan anders op een verstandige standaardwaarde — zie `app/config.p
 `PAYROLL_ACCOUNT_CODE_PREFIXES`, `PAYROLL_LOOKBACK_MONTHS`, `PAYROLL_PAY_DAY`,
 `VAT_ACCOUNT_CODE_PREFIX`, `BACKLOG_MIN_AMOUNT`, `BACKLOG_MAX_AGE_MONTHS`,
 `BACKLOG_VAT_RATE`, `DEBTOR_DELAY_DAYS`, `BACKLOG_INVOICE_DELAY_DAYS`,
-`SUGGEST_DEFER_AGE_DAYS`, `SUGGEST_SPREAD_MIN_AMOUNT`.
+`SUGGEST_DEFER_AGE_DAYS`, `SUGGEST_SPREAD_MIN_AMOUNT`, `SESSION_HOURS`,
+`INVITE_HOURS`, `MIN_PASSWORD_LENGTH`, `LOGIN_MAX_ATTEMPTS`,
+`LOGIN_LOCKOUT_MINUTES`, `DEFAULT_USER_ROLE`, `COOKIE_SECURE`.
 
 Na het opslaan start Railway automatisch een nieuwe deployment. Onder **Settings →
 Networking** kun je een publieke URL genereren (`*.up.railway.app`) of een eigen domein
@@ -190,6 +196,51 @@ rij per dag.
 Wat je niet kunt: met terugwerkende kracht standen aanvullen. Elke dag die niet is
 vastgelegd, blijft leeg.
 
+## Stap 4d — Gebruikers en rollen
+
+Vanaf deze versie logt iedereen persoonlijk in. Dat is niet alleen netter maar ook nodig:
+zonder rollen kon iedereen met het gedeelde wachtwoord ook `/api/pl` rechtstreeks opvragen
+en zo de volledige winst-en-verliesrekening tot op boekingsniveau ophalen, ook als het
+scherm dat niet liet zien.
+
+**Drie rollen**, oplopend:
+
+| Rol | Ziet | Mag wijzigen |
+|---|---|---|
+| **Manager** | alle tabbladen op rubriek- en totaalniveau | niets |
+| **Financieel** | ook de boekingsregels en de links naar Odoo | betaalplan, eigen kasregels, W&V-indeling |
+| **Beheerder** | idem | plus gebruikers en het logboek |
+
+De belangrijkste grens loopt bij de **boekingsregels**: daar zitten ook de
+personeelsrekeningen (400xxx, 401xxx) achter, en dus salarisinformatie. Een Manager ziet
+het rubriektotaal "lonen" wel, de regels erachter niet.
+
+**Zo nodig je iemand uit** (als beheerder): knop **Gebruikers** rechtsboven → e-mailadres,
+naam en rol invullen → **Uitnodigen**. Je krijgt één keer een uitnodigingslink te zien; die
+stuur je zelf door (er wordt geen e-mail verstuurd). Diegene kiest daarmee zijn eigen
+wachtwoord. De link is `INVITE_HOURS` uur geldig, standaard zeven dagen.
+
+- **Wachtwoord vergeten**: maak een nieuwe uitnodigingslink met de knop *Nieuwe link*.
+  Wachtwoorden zijn niet op te zoeken — er staat alleen een scrypt-hash in de database.
+- **Iemand vertrekt**: *Uitzetten* haalt het account offline en beëindigt meteen alle
+  lopende sessies. *Verwijderen* wist het account.
+- **Logboek**: het tabblad *Logboek* in hetzelfde venster laat zien wie wanneer wat heeft
+  gewijzigd (in- en uitloggen, betaalplan, W&V-indeling, gebruikersbeheer). Handig bij de
+  vraag "wie heeft die leverancier op uitstel gezet".
+
+**Het beheerdersaccount uit de omgeving** (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`) blijft
+altijd werken, ook als de database eruit ligt of als je jezelf per ongeluk buitensluit. Het
+is ook het enige account dat nog via HTTP basic-auth mag binnenkomen, zodat een externe
+planner `POST /api/snapshot` kan blijven aanroepen. Behandel dat wachtwoord dus als de
+hoofdsleutel: alleen jij, en verander het als het is rondgegaan.
+
+**Zonder database** werkt alleen dat ene beheerdersaccount; persoonlijke accounts hebben de
+Postgres uit stap 4b nodig. Het dashboard zegt dat ook met zoveel woorden als je het
+gebruikersscherm opent.
+
+Sessies verlopen na `SESSION_HOURS` uur (standaard 12). Het sessiecookie gaat alleen over
+https; draai je lokaal op http, zet dan `COOKIE_SECURE=0`.
+
 ## Stap 5 — Testen
 
 1. Open de Railway-URL. Je krijgt een inlogvenster van de browser (basic-auth) —
@@ -223,8 +274,11 @@ pytest
 
 ## Onderhoud — wat kun je zelf aanpassen?
 
-- **Wachtwoord wijzigen**: pas `DASHBOARD_PASSWORD` aan in Railway → Variables. Geen
-  code-wijziging nodig.
+- **Gebruikers en rollen**: knop **Gebruikers** rechtsboven (alleen zichtbaar voor een
+  beheerder). Zie stap 4d.
+- **Wachtwoord van het beheerdersaccount wijzigen**: pas `DASHBOARD_PASSWORD` aan in
+  Railway → Variables. Geen code-wijziging nodig. Persoonlijke wachtwoorden stel je
+  in via een uitnodigingslink; die staan versleuteld in de database.
 - **Rekeningschema wijzigt** (nieuwe/andere grootboekcodes): pas de bijbehorende
   environment variable aan (bv. `SUBSCRIPTION_ACCOUNT_CODES`) — hoeft niet in code.
 - **Kredietlimiet of vaste maandlasten veranderen**: `CREDIT_LIMIT` /
@@ -295,6 +349,14 @@ pytest
 - **Het teken van een rekening blijft bij de rekening.** Sleep je een omzetrekening naar
   een kostenrubriek, dan houdt hij zijn omgedraaide teken. Dat is voorspelbaar, maar
   betekent wel dat zo'n verplaatsing een negatief bedrag in de kosten kan opleveren.
+- **Rechten regelen wie het scherm mag openen, niet wat er daarna mee gebeurt.** Een
+  Manager die een screenshot in een appgroep zet, omzeilt elke rol. Ook blijft het
+  beheerdersaccount uit de omgevingsvariabelen alles mogen — dat is bewust (het is je
+  sleutel als er iets misgaat), maar het betekent wel dat dat wachtwoord de facto
+  volledige toegang geeft.
+- **Er is nog geen rol voor externen** (aandeelhouder, bank) die alleen kerncijfers zonder
+  namen van klanten en leveranciers ziet. Dat vraagt dat elke payload op naamniveau wordt
+  gefilterd en is een aparte stap.
 - **De kasprognose is geen voorspelling maar een ondergrens.** Er zitten alleen posten
   in die al vastliggen: openstaande facturen, bevestigde orders die nog gefactureerd
   moeten worden, loon en btw. Nieuwe orders die nog binnen moeten komen en inkopen

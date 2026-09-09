@@ -47,6 +47,24 @@ ODOO_API_KEY = _get_env("ODOO_API_KEY", required=True)
 DASHBOARD_USER = _get_env("DASHBOARD_USER", required=True)
 DASHBOARD_PASSWORD = _get_env("DASHBOARD_PASSWORD", required=True)
 
+# --- Inloggen en rechten ------------------------------------------------------
+# Het account hierboven is de beheerder die altijd werkt, ook zonder database — je sleutel
+# als er iets misgaat met de accounts. Persoonlijke accounts komen in de database.
+# Hoe lang een sessie geldig blijft (uren) voordat er opnieuw ingelogd moet worden:
+SESSION_HOURS = int(_get_env("SESSION_HOURS", "12"))
+# Hoe lang een uitnodigingslink bruikbaar blijft (uren):
+INVITE_HOURS = int(_get_env("INVITE_HOURS", "168"))
+# Minimale wachtwoordlengte voor persoonlijke accounts:
+MIN_PASSWORD_LENGTH = int(_get_env("MIN_PASSWORD_LENGTH", "12"))
+# Na hoeveel mislukte pogingen binnen LOGIN_LOCKOUT_MINUTES het even niet meer mag:
+LOGIN_MAX_ATTEMPTS = int(_get_env("LOGIN_MAX_ATTEMPTS", "5"))
+LOGIN_LOCKOUT_MINUTES = int(_get_env("LOGIN_LOCKOUT_MINUTES", "15"))
+# Rol die een nieuwe gebruiker krijgt als er niets is gekozen:
+DEFAULT_USER_ROLE = _get_env("DEFAULT_USER_ROLE", "manager")
+# Het sessiecookie alleen over https meesturen. Aan laten staan; alleen uitzetten om
+# lokaal op http te kunnen testen.
+COOKIE_SECURE = _get_env("COOKIE_SECURE", "1") not in ("0", "false", "False", "")
+
 # --- Database (alleen voor de eigen W&V-indeling) ---------------------------
 # Railway vult DATABASE_URL automatisch zodra je een Postgres-database aan het project
 # toevoegt en die aan deze service koppelt. Blijft de variabele leeg, dan werkt het

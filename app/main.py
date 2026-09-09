@@ -2,25 +2,25 @@
 FastAPI-app: serveert het KPI-dashboard (één HTML-pagina) en een JSON-API die de
 cijfers live uit Odoo haalt (met een korte cache, zie config.CACHE_TTL_SECONDS).
 
-De hele site zit achter HTTP basic-auth (gebruikersnaam/wachtwoord uit environment
-variables) — zie config.py en README.md.
+Iedereen logt persoonlijk in en heeft een rol (manager / financieel / beheerder). De
+rechten worden HIER gecontroleerd, per endpoint — niet in het scherm. Zie app/auth.py.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
-import secrets
 import time
 from datetime import datetime
 from pathlib import Path
 
 from contextlib import asynccontextmanager
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import config, db, kpis, snapshot
+from . import auth, config, db, kpis, snapshot
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("basetime-dashboard")
@@ -39,10 +39,11 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Basetime KPI-dashboard", lifespan=lifespan)
-security = HTTPBasic()
 
-_TEMPLATE_PATH = Path(__file__).parent / "templates" / "dashboard.html"
-_DASHBOARD_HTML = _TEMPLATE_PATH.read_text(encoding="utf-8")
+_TEMPLATES = Path(__file__).parent / "templates"
+_DASHBOARD_HTML = (_TEMPLATES / "dashboard.html").read_text(encoding="utf-8")
+_LOGIN_HTML = (_TEMPLATES / "login.html").read_text(encoding="utf-8")
+_INVITE_HTML = (_TEMPLATES / "invite.html").read_text(encoding="utf-8")
 
 # Caches zijn gesleuteld op de gekozen periode: iemand die 12 maanden opvraagt mag niet
 # de cijfers van een collega te zien krijgen die net 3 maanden koos.
@@ -98,15 +99,67 @@ def _cached(store: dict[str, dict], key: str, refresh: bool, build):
     return entry["data"]
 
 
-def check_auth(credentials: HTTPBasicCredentials = Depends(security)) -> None:
-    user_ok = secrets.compare_digest(credentials.username, config.DASHBOARD_USER)
-    pass_ok = secrets.compare_digest(credentials.password, config.DASHBOARD_PASSWORD)
-    if not (user_ok and pass_ok):
-        raise HTTPException(
-            status_code=401,
-            detail="Onjuiste gebruikersnaam of wachtwoord.",
-            headers={"WWW-Authenticate": "Basic"},
-        )
+# --- Wie ben je, en wat mag je? ------------------------------------------------
+
+def _basic_credentials(request: Request) -> tuple[str, str] | None:
+    """HTTP basic-auth blijft bestaan voor precies één doel: het beheerdersaccount uit de
+    omgevingsvariabelen, zodat een externe planner `POST /api/snapshot` kan blijven
+    aanroepen. Persoonlijke accounts loggen in met een sessie."""
+    header = request.headers.get("authorization") or ""
+    if not header.lower().startswith("basic "):
+        return None
+    try:
+        raw = base64.b64decode(header[6:].strip()).decode("utf-8")
+    except (ValueError, binascii.Error, UnicodeDecodeError):
+        return None
+    if ":" not in raw:
+        return None
+    name, password = raw.split(":", 1)
+    return name, password
+
+
+def current_user(request: Request) -> auth.User | None:
+    user = auth.user_for_token(request.cookies.get(auth.COOKIE_NAME))
+    if user:
+        return user
+    credentials = _basic_credentials(request)
+    if credentials and credentials[0] and credentials[1]:
+        try:
+            found = auth.authenticate(*credentials)
+        except db.StorageUnavailable:
+            return None
+        # Alleen het omgevingsaccount mag via basic-auth binnen; een persoonlijk account
+        # zou daarmee zijn wachtwoord bij elk verzoek meesturen.
+        if found and found.source == "omgeving":
+            return found
+    return None
+
+
+def require(minimum: str):
+    """Dependency-fabriek: geeft de ingelogde gebruiker terug, of een nette fout.
+
+    401 = niet ingelogd (de frontend stuurt je dan naar het inlogscherm),
+    403 = wel ingelogd, maar deze rol mag dit niet. Bewust GEEN WWW-Authenticate-header:
+    dan zou de browser zijn eigen inlogpopup tonen in plaats van ons inlogscherm."""
+    def dependency(request: Request) -> auth.User:
+        user = current_user(request)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Niet ingelogd.")
+        if not user.may(minimum):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Hiervoor heb je de rol {auth.ROLE_LABELS.get(minimum, minimum)} "
+                       f"of hoger nodig; jij bent {auth.ROLE_LABELS.get(user.role, user.role)}.",
+            )
+        return user
+    return dependency
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        auth.COOKIE_NAME, token, max_age=config.SESSION_HOURS * 3600,
+        httponly=True, samesite="lax", secure=config.COOKIE_SECURE, path="/",
+    )
 
 
 @app.get("/healthz")
@@ -147,7 +200,7 @@ def api_kpis(
     months: int | None = Query(None),
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
-    _auth: None = Depends(check_auth),
+    _user: auth.User = Depends(require("manager")),
 ):
     period = _parse_period(months, date_from, date_to)
 
@@ -162,7 +215,7 @@ def api_kpis(
 @app.get("/api/snapshots")
 def api_snapshots(
     days: int = Query(365, ge=1, le=1825),
-    _auth: None = Depends(check_auth),
+    _user: auth.User = Depends(require("manager")),
 ):
     """De vastgelegde standen door de tijd. Komt uit de eigen database, niet uit Odoo —
     Odoo kan deze reeks niet reconstrueren."""
@@ -170,7 +223,7 @@ def api_snapshots(
 
 
 @app.post("/api/snapshot")
-def api_snapshot_now(_auth: None = Depends(check_auth)):
+def api_snapshot_now(_user: auth.User = Depends(require("financieel"))):
     """Legt de standen van dit moment vast, ook als die van vandaag er al staat (die wordt
     dan overschreven). Normaal gesproken doet de ingebouwde planner dit vanzelf; dit
     endpoint is er om het handmatig af te dwingen of vanuit een externe planner."""
@@ -192,7 +245,7 @@ def api_inventory(
     months: int | None = Query(None),
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
-    _auth: None = Depends(check_auth),
+    _user: auth.User = Depends(require("manager")),
 ):
     """Voorraadtab: eigen endpoint/cache, apart van /api/kpis — wordt pas opgehaald
     zodra de gebruiker de 'Voorraad'-tab voor het eerst opent."""
@@ -210,7 +263,7 @@ def api_details(
     months: int | None = Query(None),
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
-    _auth: None = Depends(check_auth),
+    _user: auth.User = Depends(require("manager")),
 ):
     """Volledige (niet-ingekorte) lijst voor de 'Bekijk alle' doorklik-knoppen op het
     dashboard — zelfde cache-aanpak als /api/kpis, maar per sectie én periode apart."""
@@ -229,7 +282,7 @@ def api_pl(
     months: int | None = Query(None),
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
-    _auth: None = Depends(check_auth),
+    _user: auth.User = Depends(require("manager")),
 ):
     """Winst-en-verliesrekening tot op grootboekniveau. Eigen endpoint/cache; wordt pas
     opgehaald zodra de gebruiker de W&V-tab voor het eerst opent."""
@@ -245,7 +298,7 @@ def api_pl_lines(
     date_from: str = Query(...),
     date_to: str = Query(...),
     refresh: bool = Query(False),
-    _auth: None = Depends(check_auth),
+    _user: auth.User = Depends(require("financieel")),
 ):
     """De boekingsregels achter één bedrag op de W&V-tab. `date_to` is exclusief, net als
     in de rest van het dashboard."""
@@ -289,7 +342,7 @@ def _storage_guard(fn):
 @app.post("/api/pl/account")
 def api_pl_move_account(
     payload: dict = Body(...),
-    _auth: None = Depends(check_auth),
+    user: auth.User = Depends(require("financieel")),
 ):
     """Verplaatst één grootboekrekening naar een andere rubriek. Een lege rubriek zet de
     rekening terug naar de indeling die Odoo zelf berekent."""
@@ -301,13 +354,14 @@ def api_pl_move_account(
         _storage_guard(lambda: db.set_override(code, rubriek))
     else:
         _storage_guard(lambda: db.clear_override(code))
+    auth.audit(user, "wv-rekening-verplaatst", {"code": code, "rubriek": rubriek or "(terug naar Odoo)"})
     return _layout_changed()
 
 
 @app.post("/api/pl/rubriek")
 def api_pl_add_rubriek(
     payload: dict = Body(...),
-    _auth: None = Depends(check_auth),
+    user: auth.User = Depends(require("financieel")),
 ):
     name = str(payload.get("name") or "").strip()
     parent = str(payload.get("parent") or "").strip()
@@ -316,11 +370,12 @@ def api_pl_add_rubriek(
     if len(name) > 80:
         raise HTTPException(status_code=400, detail="Die naam is te lang (max. 80 tekens).")
     created = _storage_guard(lambda: db.add_rubriek(name, parent))
+    auth.audit(user, "wv-rubriek-toegevoegd", {"naam": name, "onder": parent})
     return {**_layout_changed(), "rubriek": created}
 
 
 @app.delete("/api/pl/rubriek/{rubriek_id}")
-def api_pl_delete_rubriek(rubriek_id: str, _auth: None = Depends(check_auth)):
+def api_pl_delete_rubriek(rubriek_id: str, user: auth.User = Depends(require("financieel"))):
     """Verwijdert een zelf toegevoegde rubriek; de rekeningen erin gaan terug naar de
     rubriek die Odoo ze geeft."""
     if not db.is_custom(rubriek_id):
@@ -330,13 +385,15 @@ def api_pl_delete_rubriek(rubriek_id: str, _auth: None = Depends(check_auth)):
                    "rubrieken uit het Odoo-rapport horen daar thuis.",
         )
     _storage_guard(lambda: db.delete_rubriek(rubriek_id))
+    auth.audit(user, "wv-rubriek-verwijderd", {"rubriek": rubriek_id})
     return _layout_changed()
 
 
 @app.post("/api/pl/reset")
-def api_pl_reset(_auth: None = Depends(check_auth)):
+def api_pl_reset(user: auth.User = Depends(require("financieel"))):
     """Alles terug naar de indeling van het Odoo-rapport."""
     _storage_guard(db.reset)
+    auth.audit(user, "wv-indeling-hersteld")
     return _layout_changed()
 
 
@@ -346,7 +403,7 @@ def api_pl_reset(_auth: None = Depends(check_auth)):
 def api_cash(
     refresh: bool = Query(False),
     weeks: int | None = Query(None, ge=2, le=52),
-    _auth: None = Depends(check_auth),
+    _user: auth.User = Depends(require("manager")),
 ):
     """De rollende kasprognose. Eigen endpoint/cache; wordt pas opgehaald zodra de
     gebruiker de Kas-tab voor het eerst opent."""
@@ -364,7 +421,7 @@ def _cash_changed() -> dict:
 
 
 @app.post("/api/cash/plan")
-def api_cash_plan(payload: dict = Body(...), _auth: None = Depends(check_auth)):
+def api_cash_plan(payload: dict = Body(...), user: auth.User = Depends(require("financieel"))):
     """Zet de betaalafspraak voor één groep (meestal één leverancier). Een lege of
     ontbrekende `mode` zet 'm terug op de standaard: betalen op vervaldatum."""
     key = str(payload.get("key") or "").strip()
@@ -373,6 +430,7 @@ def api_cash_plan(payload: dict = Body(...), _auth: None = Depends(check_auth)):
     mode = str(payload.get("mode") or "").strip()
     if not mode or mode == "due":
         _storage_guard(lambda: db.clear_cash_plan(key))
+        auth.audit(user, "betaalplan-teruggezet", {"groep": key})
         return _cash_changed()
     if mode not in db.PLAN_MODES:
         raise HTTPException(status_code=400, detail=f"Onbekende betaalwijze: {mode}")
@@ -388,11 +446,15 @@ def api_cash_plan(payload: dict = Body(...), _auth: None = Depends(check_auth)):
     _storage_guard(
         lambda: db.set_cash_plan(key, label, mode, start_week, spread, note)
     )
+    auth.audit(user, "betaalplan-gewijzigd", {
+        "groep": key, "naam": label, "betaalwijze": mode,
+        "vanaf_week": start_week + 1, "delen": spread,
+    })
     return _cash_changed()
 
 
 @app.post("/api/cash/plan/apply-suggestions")
-def api_cash_apply_suggestions(_auth: None = Depends(check_auth)):
+def api_cash_apply_suggestions(user: auth.User = Depends(require("financieel"))):
     """Neemt het beredeneerde voorstel per leverancier in één keer over. Alles wat al
     handmatig is ingesteld blijft staan — het voorstel wordt alleen aangeboden voor
     groepen zonder eigen afspraak."""
@@ -404,18 +466,20 @@ def api_cash_apply_suggestions(_auth: None = Depends(check_auth)):
             s.get("spread", 1), s.get("reason", ""),
         ))
         applied.append(suggestion["key"])
+    auth.audit(user, "betaalplan-voorstel-overgenomen", {"groepen": applied})
     return {**_cash_changed(), "applied": applied}
 
 
 @app.post("/api/cash/reset")
-def api_cash_reset(_auth: None = Depends(check_auth)):
+def api_cash_reset(user: auth.User = Depends(require("financieel"))):
     """Alles terug naar 'op vervaldatum', inclusief de eigen regels."""
     _storage_guard(db.reset_cash_plan)
+    auth.audit(user, "betaalplan-gewist")
     return _cash_changed()
 
 
 @app.post("/api/cash/extra")
-def api_cash_extra(payload: dict = Body(...), _auth: None = Depends(check_auth)):
+def api_cash_extra(payload: dict = Body(...), user: auth.User = Depends(require("financieel"))):
     """Een eigen regel in de prognose: een financieringsronde, een toegezegde betaling,
     een verwachte uitgave. Positief = ontvangst, negatief = uitgave."""
     label = str(payload.get("label") or "").strip()
@@ -435,15 +499,277 @@ def api_cash_extra(payload: dict = Body(...), _auth: None = Depends(check_auth))
     created = _storage_guard(lambda: db.add_cash_extra(
         label[:120], amount, on_date, str(payload.get("note") or "")[:300]
     ))
+    auth.audit(user, "kasregel-toegevoegd", {"naam": label[:120], "bedrag": amount, "datum": on_date})
     return {**_cash_changed(), "extra": created}
 
 
 @app.delete("/api/cash/extra/{extra_id}")
-def api_cash_extra_delete(extra_id: int, _auth: None = Depends(check_auth)):
+def api_cash_extra_delete(extra_id: int, user: auth.User = Depends(require("financieel"))):
     _storage_guard(lambda: db.delete_cash_extra(extra_id))
+    auth.audit(user, "kasregel-verwijderd", {"id": extra_id})
     return _cash_changed()
 
 
+# --- Inloggen, uitloggen, uitnodigingen -----------------------------------------
+
+def _escape(value: str) -> str:
+    return (str(value or "").replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _login_page(message: str = "", email: str = "", status: int = 200) -> HTMLResponse:
+    html = (_LOGIN_HTML
+            .replace("{{MELDINGWEERGAVE}}", "block" if message else "none")
+            .replace("{{MELDING}}", _escape(message))
+            .replace("{{EMAIL}}", _escape(email)))
+    return HTMLResponse(html, status_code=status)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    if current_user(request):
+        return RedirectResponse("/", status_code=303)
+    return _login_page()
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request):
+    form = await request.form()
+    identifier = str(form.get("email") or "").strip()
+    password = str(form.get("password") or "")
+    key = identifier.lower() or (request.client.host if request.client else "onbekend")
+
+    if auth.too_many_attempts(key):
+        auth.audit(None, "inloggen-geblokkeerd", {"account": identifier})
+        return _login_page(
+            f"Te veel mislukte pogingen. Probeer het over {config.LOGIN_LOCKOUT_MINUTES} "
+            "minuten opnieuw.", identifier, status=429)
+
+    try:
+        user = auth.authenticate(identifier, password)
+    except db.StorageUnavailable as exc:
+        logger.warning("Inloggen mislukt door de database: %s", exc)
+        return _login_page(
+            "De database is nu niet bereikbaar, dus persoonlijke accounts kunnen even niet "
+            "inloggen. Probeer het zo nog eens.", identifier, status=503)
+
+    if not user:
+        auth.register_failure(key)
+        auth.audit(None, "inloggen-mislukt", {"account": identifier})
+        # Bewust één melding voor beide fouten: anders verklap je welke accounts bestaan.
+        return _login_page("Onbekende combinatie van e-mailadres en wachtwoord.",
+                           identifier, status=401)
+
+    auth.clear_attempts(key)
+    token = auth.start_session(user)
+    auth.audit(user, "ingelogd", {"via": user.source})
+    response = RedirectResponse("/", status_code=303)
+    _set_session_cookie(response, token)
+    return response
+
+
+@app.get("/logout")
+def logout(request: Request):
+    user = current_user(request)
+    auth.end_session(request.cookies.get(auth.COOKIE_NAME))
+    if user:
+        auth.audit(user, "uitgelogd")
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(auth.COOKIE_NAME, path="/")
+    return response
+
+
+def _invite_page(token: str, message: str = "", name: str = "", status: int = 200) -> HTMLResponse:
+    html = (_INVITE_HTML
+            .replace("{{TOKEN}}", _escape(token))
+            .replace("{{MELDINGWEERGAVE}}", "block" if message else "none")
+            .replace("{{MELDING}}", _escape(message))
+            .replace("{{NAAM}}", _escape(name))
+            .replace("{{MINLENGTE}}", str(config.MIN_PASSWORD_LENGTH)))
+    return HTMLResponse(html, status_code=status)
+
+
+@app.get("/uitnodiging", response_class=HTMLResponse)
+def invite_page(token: str = Query("")):
+    row = auth.user_for_invite(token)
+    if not row:
+        return _login_page(
+            "Deze uitnodigingslink is niet (meer) geldig. Vraag de beheerder om een nieuwe.",
+            status=400)
+    return _invite_page(token, name=row.get("name") or row["email"])
+
+
+@app.post("/uitnodiging", response_class=HTMLResponse)
+async def invite_submit(request: Request):
+    form = await request.form()
+    token = str(form.get("token") or "")
+    password = str(form.get("password") or "")
+    repeat = str(form.get("password2") or "")
+    row = auth.user_for_invite(token)
+    if not row:
+        return _login_page(
+            "Deze uitnodigingslink is niet (meer) geldig. Vraag de beheerder om een nieuwe.",
+            status=400)
+    name = row.get("name") or row["email"]
+    if password != repeat:
+        return _invite_page(token, "De twee wachtwoorden zijn niet gelijk.", name, status=400)
+    problem = auth.password_problem(password)
+    if problem:
+        return _invite_page(token, problem, name, status=400)
+    user = auth.accept_invite(token, password)
+    if not user:
+        return _login_page("Deze uitnodigingslink is niet (meer) geldig.", status=400)
+    auth.audit(user, "wachtwoord-ingesteld")
+    response = RedirectResponse("/", status_code=303)
+    _set_session_cookie(response, auth.start_session(user))
+    return response
+
+
+@app.get("/api/me")
+def api_me(request: Request):
+    """Wie ben ik en wat mag ik? Het scherm gebruikt dit alleen om te verbergen wat je
+    tóch niet mag; de echte controle zit op de endpoints hierboven."""
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Niet ingelogd.")
+    return {**user.as_dict(), "database": db.configured()}
+
+
+# --- Gebruikersbeheer (alleen beheerder) ------------------------------------------
+
+def _invite_link(request: Request, token: str) -> str:
+    """De link die de beheerder doorstuurt. Achter de Railway-proxy ziet de app zelf
+    http; de buitenkant is https. Vandaar de correctie — een http-link in een mailtje
+    ziet er niet uit en werkt bij een strikte browser niet."""
+    base = str(request.base_url).rstrip("/")
+    forwarded = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    if forwarded:
+        base = forwarded + base[base.index("://"):]
+    elif base.startswith("http://") and not base.startswith(("http://127.", "http://localhost")):
+        base = "https://" + base[len("http://"):]
+    return base + "/uitnodiging?token=" + token
+
+
+def _public_user(row: dict) -> dict:
+    return {
+        "id": row["id"], "email": row["email"], "name": row.get("name") or "",
+        "role": row["role"], "role_label": auth.ROLE_LABELS.get(row["role"], row["role"]),
+        "active": bool(row.get("active")),
+        "has_password": bool(row.get("password_hash")),
+        "invite_open": bool(row.get("invite_hash")),
+        "last_login_at": row["last_login_at"].isoformat() if row.get("last_login_at") else None,
+    }
+
+
+def _require_database() -> None:
+    if not db.configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Persoonlijke accounts hebben een database nodig. Voeg in Railway een "
+                   "Postgres toe en koppel DATABASE_URL aan deze service.",
+        )
+
+
+@app.get("/api/users")
+def api_users(user: auth.User = Depends(require("beheerder"))):
+    _require_database()
+    return {
+        "users": [_public_user(row) for row in _storage_guard(db.list_users)],
+        "roles": [{"key": key, "label": auth.ROLE_LABELS[key],
+                   "description": auth.ROLE_DESCRIPTIONS[key]} for key in auth.ROLES],
+        "me": user.as_dict(),
+    }
+
+
+@app.post("/api/users")
+def api_user_create(request: Request, payload: dict = Body(...),
+                    user: auth.User = Depends(require("beheerder"))):
+    """Maakt een account aan en geeft één keer een uitnodigingslink terug. Die stuur je
+    zelf door; de nieuwe gebruiker kiest daarmee zijn eigen wachtwoord. Er komt hier dus
+    nooit een wachtwoord langs."""
+    _require_database()
+    email = str(payload.get("email") or "").strip().lower()
+    name = str(payload.get("name") or "").strip()[:80]
+    role = str(payload.get("role") or config.DEFAULT_USER_ROLE).strip()
+    if "@" not in email or len(email) < 5:
+        raise HTTPException(status_code=400, detail="Geef een geldig e-mailadres op.")
+    if role not in auth.ROLES:
+        raise HTTPException(status_code=400, detail=f"Onbekende rol: {role}")
+    if _storage_guard(lambda: db.get_user_by_email(email)):
+        raise HTTPException(status_code=400, detail="Dat e-mailadres heeft al een account.")
+    created = _storage_guard(lambda: db.create_user(email, name, role))
+    token = _storage_guard(lambda: auth.create_invite(created["id"]))
+    auth.audit(user, "gebruiker-toegevoegd", {"email": email, "rol": role})
+    return {"ok": True, "user": created, "invite_url": _invite_link(request, token),
+            "invite_hours": config.INVITE_HOURS}
+
+
+@app.post("/api/users/{user_id}")
+def api_user_update(user_id: int, payload: dict = Body(...),
+                    user: auth.User = Depends(require("beheerder"))):
+    _require_database()
+    target = _storage_guard(lambda: db.get_user(user_id))
+    if not target:
+        raise HTTPException(status_code=404, detail="Die gebruiker bestaat niet.")
+    role = payload.get("role")
+    active = payload.get("active")
+    name = payload.get("name")
+    if role is not None and role not in auth.ROLES:
+        raise HTTPException(status_code=400, detail=f"Onbekende rol: {role}")
+    # Jezelf uitzetten of degraderen is de klassieke manier om jezelf buiten te sluiten.
+    if user.source == "database" and target["id"] == user.id:
+        if active is False:
+            raise HTTPException(status_code=400, detail="Je kunt je eigen account niet uitzetten.")
+        if role is not None and role != "beheerder":
+            raise HTTPException(status_code=400,
+                                detail="Je kunt je eigen beheerdersrol niet afnemen.")
+    _storage_guard(lambda: db.update_user(
+        user_id, name=None if name is None else str(name)[:80],
+        role=role, active=None if active is None else bool(active)))
+    auth.audit(user, "gebruiker-gewijzigd", {
+        "email": target["email"],
+        "rol": role or target["role"],
+        "actief": target["active"] if active is None else bool(active),
+    })
+    return {"ok": True, "user": _public_user(_storage_guard(lambda: db.get_user(user_id)))}
+
+
+@app.post("/api/users/{user_id}/invite")
+def api_user_invite(user_id: int, request: Request,
+                    user: auth.User = Depends(require("beheerder"))):
+    """Nieuwe uitnodigingslink — ook de manier om een vergeten wachtwoord op te lossen."""
+    _require_database()
+    target = _storage_guard(lambda: db.get_user(user_id))
+    if not target:
+        raise HTTPException(status_code=404, detail="Die gebruiker bestaat niet.")
+    token = _storage_guard(lambda: auth.create_invite(user_id))
+    auth.audit(user, "uitnodiging-aangemaakt", {"email": target["email"]})
+    return {"ok": True, "invite_url": _invite_link(request, token),
+            "invite_hours": config.INVITE_HOURS, "email": target["email"]}
+
+
+@app.delete("/api/users/{user_id}")
+def api_user_delete(user_id: int, user: auth.User = Depends(require("beheerder"))):
+    _require_database()
+    target = _storage_guard(lambda: db.get_user(user_id))
+    if not target:
+        raise HTTPException(status_code=404, detail="Die gebruiker bestaat niet.")
+    if user.source == "database" and target["id"] == user.id:
+        raise HTTPException(status_code=400, detail="Je kunt je eigen account niet verwijderen.")
+    _storage_guard(lambda: db.delete_user(user_id))
+    auth.audit(user, "gebruiker-verwijderd", {"email": target["email"]})
+    return {"ok": True}
+
+
+@app.get("/api/audit")
+def api_audit(limit: int = Query(100, ge=1, le=500),
+              _user: auth.User = Depends(require("beheerder"))):
+    _require_database()
+    return {"entries": _storage_guard(lambda: db.list_audit(limit))}
+
+
 @app.get("/", response_class=HTMLResponse)
-def dashboard(_auth: None = Depends(check_auth)):
+def dashboard(request: Request):
+    if not current_user(request):
+        return RedirectResponse("/login", status_code=303)
     return HTMLResponse(_DASHBOARD_HTML)

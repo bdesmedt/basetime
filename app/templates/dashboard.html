@@ -297,6 +297,36 @@
   .cash-addrow input { font: inherit; font-size: 12.5px; padding: 5px 8px; border-radius: 6px;
                        border: 1px solid var(--border); background: var(--page-plane); color: var(--text-primary); }
   .cash-addrow .grow { flex: 1 1 200px; }
+  /* --- Rechten en gebruikersbeheer ----------------------------------------- */
+  /* Opmaak, geen beveiliging: dit verbergt alleen wat je toch niet mag. De controle
+     zit in de API (zie app/main.py). */
+  .alleen-financieel, .alleen-beheerder { display: none; }
+  body.mag-wijzigen .alleen-financieel { display: initial; }
+  body.mag-wijzigen .cash-addrow.alleen-financieel { display: flex !important; }
+  body.mag-beheren .alleen-beheerder { display: initial; }
+  .user-chip { font-size: 11.5px; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+               background: var(--surface-1); border: 1px solid var(--border);
+               color: var(--text-secondary); margin-right: 4px; }
+  .users-message { border-radius: 7px; padding: 9px 12px; font-size: 12.5px; margin: 10px 0; display: none; }
+  .users-message.fout { background: rgba(208,59,59,0.12); border: 1px solid var(--status-critical); }
+  .users-message.ok { background: rgba(12,163,12,0.12); border: 1px solid var(--status-good); }
+  .users-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin: 4px 0 14px; }
+  .users-add label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
+  .users-add input, .users-add select { font: inherit; font-size: 12.5px; padding: 5px 8px;
+      border-radius: 6px; border: 1px solid var(--border); background: var(--page-plane);
+      color: var(--text-primary); }
+  .users-roles { font-size: 11.5px; color: var(--text-muted); margin-top: 14px; line-height: 1.6; }
+  #users-invite { display: none; background: rgba(42,120,214,0.10); border: 1px solid var(--series-1);
+                  border-radius: 8px; padding: 12px 14px; font-size: 12.5px; margin: 10px 0; }
+  #users-invite p { margin: 5px 0 8px; color: var(--text-secondary); }
+  #users-invite input { font: inherit; font-size: 12px; width: 100%; padding: 6px 8px; margin-bottom: 8px;
+      border-radius: 6px; border: 1px solid var(--border); background: var(--page-plane);
+      color: var(--text-primary); }
+  .users-tabs { display: flex; gap: 16px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+  .users-tabs button { background: none; border: none; border-bottom: 2px solid transparent;
+      color: var(--text-secondary); font: inherit; font-size: 12.5px; font-weight: 600;
+      padding: 6px 2px; cursor: pointer; }
+  .users-tabs button.active { color: var(--text-primary); border-bottom-color: var(--series-1); }
 </style>
 </head>
 <body>
@@ -312,8 +342,11 @@
     </div>
     <div class="meta">
       <span id="last-updated">Laden…</span><br>
+      <span class="user-chip" id="user-chip">…</span>
+      <button class="btn alleen-beheerder" onclick="openUsers()">Gebruikers</button>
       <button class="btn" onclick="loadData(true)">Vernieuwen</button>
       <button class="btn" onclick="toggleTheme()">Donker / licht</button>
+      <a class="btn" href="/logout" style="text-decoration:none">Uitloggen</a>
     </div>
   </header>
 
@@ -579,7 +612,7 @@
     <div class="pl-toolbar">
       <span class="pl-chip" id="cash-plan-chip">Geen afspraken vastgelegd</span>
       <span class="spacer"></span>
-      <button class="btn" onclick="resetCashPlan()">Alles terug naar vervaldatum</button>
+      <button class="btn alleen-financieel" onclick="resetCashPlan()">Alles terug naar vervaldatum</button>
     </div>
     <div class="pl-panel">
       <div class="pl-scroll">
@@ -623,7 +656,7 @@
         </table>
       </div>
       <div class="pl-foot">
-        <div class="cash-addrow">
+        <div class="cash-addrow alleen-financieel" style="display:none">
           <div class="grow">
             <label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:3px;">Omschrijving</label>
             <input type="text" id="cash-extra-label" placeholder="bv. financiering aandeelhouders" style="width:100%">
@@ -768,8 +801,8 @@
       <button class="btn" onclick="setPlOpenAll(false)">Alles inklappen</button>
       <span class="spacer"></span>
       <span class="pl-chip" id="pl-status-chip">Indeling volgt Odoo</span>
-      <button class="btn" id="pl-add-rubriek" onclick="openPlRubriekDialog()">+ Rubriek</button>
-      <button class="btn" id="pl-reset" onclick="resetPlLayout()">Terug naar Odoo</button>
+      <button class="btn alleen-financieel" id="pl-add-rubriek" onclick="openPlRubriekDialog()">+ Rubriek</button>
+      <button class="btn alleen-financieel" id="pl-reset" onclick="resetPlLayout()">Terug naar Odoo</button>
     </div>
 
     <div class="pl-panel">
@@ -851,6 +884,47 @@
       <div class="modal-state">Laden…</div>
     </div>
     <div class="pl-foot" id="pl-lines-foot"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="users-modal" onclick="if(event.target===this) closeUsers()">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <div>
+        <h3>Gebruikers en rechten</h3>
+        <p>Wie mag wat? De rollen worden op de server gecontroleerd, bij elk verzoek.</p>
+      </div>
+      <button class="modal-close" onclick="closeUsers()">Sluiten &#10005;</button>
+    </div>
+    <div class="modal-body">
+      <div class="users-tabs">
+        <button id="users-tab-users" class="active" onclick="showUsersPane('users')">Gebruikers</button>
+        <button id="users-tab-audit" onclick="showUsersPane('audit')">Logboek</button>
+      </div>
+      <div id="users-pane-users">
+        <div class="users-add">
+          <div>
+            <label for="new-user-email">E-mailadres</label>
+            <input type="email" id="new-user-email" placeholder="naam@basetime.nl">
+          </div>
+          <div>
+            <label for="new-user-name">Naam</label>
+            <input type="text" id="new-user-name" placeholder="Voor- en achternaam">
+          </div>
+          <div>
+            <label for="new-user-role">Rol</label>
+            <select id="new-user-role"></select>
+          </div>
+          <button class="btn" onclick="addUser()">Uitnodigen</button>
+        </div>
+        <div id="users-invite"></div>
+        <div id="users-message" class="users-message"></div>
+        <div id="users-body"><div class="modal-state">Laden…</div></div>
+      </div>
+      <div id="users-pane-audit" style="display:none">
+        <div id="users-audit"><div class="modal-state">Laden…</div></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -2117,7 +2191,9 @@ let plPopFor = null;
 let plMoveCode = null;
 
 function plCanEdit(){
-  return !!(plData && plData.layout && plData.layout.storage === 'postgres');
+  // Twee voorwaarden: er moet een database zijn om het in op te slaan, én je moet de rol
+  // hebben om te mogen wijzigen. De server controleert dat laatste nog een keer.
+  return !!(ME.may_edit && plData && plData.layout && plData.layout.storage === 'postgres');
 }
 
 function plIndexTree(){
@@ -2279,7 +2355,7 @@ function plPutCells(tr, cells, onCell){
     td.textContent = c.t;
     td.className = (c.c || '') + (c.sep ? ' sep' : '') + (c.sticky ? ' pl-r' : '');
     const col = plMode().cols[i];
-    if (onCell && col && col.range){
+    if (onCell && col && col.range && ME.may_see_lines){
       td.classList.add('pl-click');
       td.title = 'Bekijk de boekingsregels achter dit bedrag';
       td.onclick = () => onCell(col);
@@ -2748,9 +2824,11 @@ function renderPlChanges(){
     [[r.now, cols.now], [r.before, cols.before]].forEach(([value, col]) => {
       const cell = tr.insertCell();
       cell.textContent = plFmt(value);
-      cell.classList.add('pl-click');
-      cell.title = 'Bekijk de boekingsregels achter dit bedrag';
-      cell.onclick = () => openPlLines(r.code ? r.code + ' ' + r.name : r.name, r.accounts, col);
+      if (ME.may_see_lines){
+        cell.classList.add('pl-click');
+        cell.title = 'Bekijk de boekingsregels achter dit bedrag';
+        cell.onclick = () => openPlLines(r.code ? r.code + ' ' + r.name : r.name, r.accounts, col);
+      }
     });
 
     const dCell = tr.insertCell();
@@ -3227,6 +3305,14 @@ function renderCashWeeks(){
 function cashModeCell(group){
   const modes = group.side === 'in' ? CASH_MODES_IN : CASH_MODES_OUT;
   const k = plEsc(group.key);
+  if (!ME.may_edit){
+    // Zonder wijzigrecht toon je wát er is afgesproken, niet de knop om het te veranderen.
+    const label = (modes.find(m => m[0] === group.mode) || modes[0])[1];
+    const extra = group.mode === 'spread'
+      ? ' (' + group.spread + ' delen vanaf week ' + (group.start_week + 1) + ')'
+      : (group.mode === 'week' ? ' (week ' + (group.start_week + 1) + ')' : '');
+    return '<span style="color:var(--text-secondary)">' + label + extra + '</span>';
+  }
   let s = '<div class="cash-ctrl">';
   s += '<select class="pl-select" id="cm-' + k + '" onchange="saveCashRow(\'' + k + '\')">' +
        modes.map(m => '<option value="' + m[0] + '"' + (group.mode === m[0] ? ' selected' : '') + '>' +
@@ -3302,7 +3388,8 @@ function renderCashGroups(){
   document.getElementById('cash-other-body').innerHTML = other.length ? other.map(g => {
     const when = g.category === 'overig'
       ? fmtDateNL(g.items[0].due) +
-        ' <button class="pl-movebtn" onclick="deleteCashExtra(' + g.extra_id + ')">verwijderen</button>'
+        (ME.may_edit ? ' <button class="pl-movebtn" onclick="deleteCashExtra(' + g.extra_id +
+                       ')">verwijderen</button>' : '')
       : cashModeCell(g);
     return '<tr>' +
       '<td class="pl-l">' + cashGroupLabel(g) + '</td>' +
@@ -3450,8 +3537,223 @@ function closeCashWeek(){
   document.getElementById('cash-week-modal').classList.remove('open');
 }
 
+/* --- Wie ben ik, en wat mag ik? --------------------------------------------
+   Let op: alles hieronder is OPMAAK, geen beveiliging. Het verbergt wat je toch niet
+   mag, zodat je niet op knoppen klikt die een foutmelding geven. De echte controle zit
+   in de API (app/main.py, require(...)), want wie de URL kent komt niet langs dit
+   scherm. */
+
+let ME = { role: 'manager', may_edit: false, may_see_lines: false, may_manage_users: false };
+
+function applyRole(){
+  document.documentElement.dataset.role = ME.role;
+  document.body.classList.toggle('mag-wijzigen', !!ME.may_edit);
+  document.body.classList.toggle('mag-regels-zien', !!ME.may_see_lines);
+  document.body.classList.toggle('mag-beheren', !!ME.may_manage_users);
+  const chip = document.getElementById('user-chip');
+  if (chip){
+    chip.textContent = ME.label + ' · ' + ME.role_label;
+    chip.title = ME.source === 'omgeving'
+      ? 'Ingelogd met het beheerdersaccount uit de omgevingsvariabelen'
+      : 'Ingelogd als ' + ME.email;
+  }
+}
+
+async function loadMe(){
+  const resp = await fetch('/api/me');
+  if (resp.status === 401){ window.location = '/login'; return false; }
+  if (!resp.ok) return false;
+  ME = await resp.json();
+  applyRole();
+  return true;
+}
+
+/* Eén plek waar een verlopen sessie wordt opgevangen: elke fetch die 401 teruggeeft
+   stuurt je naar het inlogscherm in plaats van een onbegrijpelijke foutmelding. */
+const _fetch = window.fetch.bind(window);
+window.fetch = async function(...args){
+  const resp = await _fetch(...args);
+  if (resp.status === 401 && !String(args[0]).startsWith('/login')){
+    window.location = '/login';
+  }
+  return resp;
+};
+
+/* --- Gebruikersbeheer ------------------------------------------------------- */
+
+let usersData = null;
+
+function openUsers(){
+  document.getElementById('users-modal').classList.add('open');
+  loadUsers();
+}
+
+function closeUsers(){
+  document.getElementById('users-modal').classList.remove('open');
+}
+
+function usersMessage(text, kind){
+  const el = document.getElementById('users-message');
+  el.textContent = text || '';
+  el.className = 'users-message' + (kind ? ' ' + kind : '');
+  el.style.display = text ? 'block' : 'none';
+}
+
+async function loadUsers(){
+  try {
+    const resp = await fetch('/api/users');
+    if (!resp.ok){
+      const body = await resp.json().catch(()=>({}));
+      throw new Error(body.detail || ('HTTP ' + resp.status));
+    }
+    usersData = await resp.json();
+    renderUsers();
+  } catch (err) {
+    document.getElementById('users-body').innerHTML =
+      '<div class="modal-state">' + plEsc(err.message) + '</div>';
+  }
+}
+
+function renderUsers(){
+  const roles = usersData.roles;
+  const rows = usersData.users.map(u => {
+    const status = !u.active ? '<span class="cash-tag late">uitgezet</span>'
+      : (u.has_password ? '' : '<span class="cash-tag planned">nog niet ingelogd</span>');
+    const select = '<select class="pl-select" onchange="setUserRole(' + u.id + ', this.value)">' +
+      roles.map(r => '<option value="' + r.key + '"' + (u.role === r.key ? ' selected' : '') +
+                     '>' + r.label + '</option>').join('') + '</select>';
+    return '<tr>' +
+      '<td class="name">' + plEsc(u.name || u.email) +
+        (u.name ? '<span class="cash-why">' + plEsc(u.email) + '</span>' : '') + ' ' + status + '</td>' +
+      '<td>' + (u.last_login_at ? fmtDateNL(u.last_login_at.slice(0, 10)) : '–') + '</td>' +
+      '<td>' + select + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="pl-movebtn" onclick="inviteUser(' + u.id + ')">Nieuwe link</button>' +
+        '<button class="pl-movebtn" onclick="toggleUser(' + u.id + ',' + (!u.active) + ')">' +
+          (u.active ? 'Uitzetten' : 'Aanzetten') + '</button>' +
+        '<button class="pl-movebtn" onclick="removeUser(' + u.id + ')">Verwijderen</button>' +
+      '</td></tr>';
+  }).join('');
+
+  document.getElementById('users-body').innerHTML =
+    '<table class="data-table"><thead><tr><th>Gebruiker</th><th>Laatst ingelogd</th>' +
+    '<th>Rol</th><th>Acties</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<div class="users-roles">' + roles.map(r =>
+      '<div><b>' + r.label + '</b> — ' + plEsc(r.description) + '</div>').join('') + '</div>';
+
+  const roleSelect = document.getElementById('new-user-role');
+  if (roleSelect && !roleSelect.options.length){
+    roleSelect.innerHTML = roles.map(r =>
+      '<option value="' + r.key + '"' + (r.key === 'manager' ? ' selected' : '') + '>' +
+      r.label + '</option>').join('');
+  }
+}
+
+async function usersPost(url, body, method){
+  const resp = await fetch(url, {
+    method: method || 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await resp.json().catch(()=>({}));
+  if (!resp.ok) throw new Error(data.detail || ('Mislukt (' + resp.status + ')'));
+  return data;
+}
+
+function showInvite(url, email, hours){
+  // De link wordt hier één keer getoond: hij staat alleen als hash in de database, dus
+  // opnieuw opvragen kan niet — dan maak je een nieuwe.
+  const box = document.getElementById('users-invite');
+  box.style.display = 'block';
+  box.innerHTML = '<b>Uitnodigingslink voor ' + plEsc(email) + '</b>' +
+    '<p>Stuur deze link zelf door. Hij is ' + Math.round(hours / 24) + ' dagen geldig en ' +
+    'werkt één keer: daarna kiest die persoon zijn eigen wachtwoord. Je ziet de link hierna ' +
+    'niet meer terug — sluit je dit venster, maak dan een nieuwe aan.</p>' +
+    '<input type="text" readonly value="' + plEsc(url) + '" onclick="this.select()">' +
+    '<button class="btn" onclick="copyInvite()">Kopieer link</button>';
+}
+
+function copyInvite(){
+  const input = document.querySelector('#users-invite input');
+  if (!input) return;
+  input.select();
+  navigator.clipboard.writeText(input.value).then(
+    () => usersMessage('Link gekopieerd.', 'ok'),
+    () => usersMessage('Kopiëren lukte niet — selecteer de link en kopieer hem handmatig.', 'fout'));
+}
+
+async function addUser(){
+  const email = document.getElementById('new-user-email').value.trim();
+  const name = document.getElementById('new-user-name').value.trim();
+  const role = document.getElementById('new-user-role').value;
+  try {
+    usersMessage('');
+    const data = await usersPost('/api/users', { email, name, role });
+    document.getElementById('new-user-email').value = '';
+    document.getElementById('new-user-name').value = '';
+    showInvite(data.invite_url, email, data.invite_hours);
+    await loadUsers();
+  } catch (err) { usersMessage(err.message, 'fout'); }
+}
+
+async function setUserRole(id, role){
+  try { usersMessage(''); await usersPost('/api/users/' + id, { role }); await loadUsers();
+        usersMessage('Rol aangepast.', 'ok'); }
+  catch (err) { usersMessage(err.message, 'fout'); await loadUsers(); }
+}
+
+async function toggleUser(id, active){
+  try { usersMessage(''); await usersPost('/api/users/' + id, { active }); await loadUsers(); }
+  catch (err) { usersMessage(err.message, 'fout'); }
+}
+
+async function inviteUser(id){
+  try {
+    usersMessage('');
+    const data = await usersPost('/api/users/' + id + '/invite');
+    showInvite(data.invite_url, data.email, data.invite_hours);
+    await loadUsers();
+  } catch (err) { usersMessage(err.message, 'fout'); }
+}
+
+async function removeUser(id){
+  const user = usersData.users.find(u => u.id === id);
+  if (!confirm('Account van ' + (user ? (user.name || user.email) : 'deze gebruiker') +
+               ' definitief verwijderen?')) return;
+  try { usersMessage(''); await usersPost('/api/users/' + id, null, 'DELETE'); await loadUsers(); }
+  catch (err) { usersMessage(err.message, 'fout'); }
+}
+
+async function loadAudit(){
+  const body = document.getElementById('users-audit');
+  body.innerHTML = '<div class="modal-state">Laden…</div>';
+  try {
+    const resp = await fetch('/api/audit?limit=100');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
+    if (!data.entries.length){ body.innerHTML = '<div class="modal-state">Nog niets vastgelegd.</div>'; return; }
+    body.innerHTML = '<table class="data-table"><thead><tr><th>Wanneer</th><th>Wie</th>' +
+      '<th>Wat</th><th>Details</th></tr></thead><tbody>' +
+      data.entries.map(e => '<tr><td class="name">' +
+        new Date(e.at).toLocaleString('nl-NL') + '</td><td>' + plEsc(e.actor) + '</td><td>' +
+        plEsc(e.action) + '</td><td style="text-align:left">' +
+        plEsc(Object.entries(e.detail || {}).map(([k, v]) => k + ': ' + v).join(', ')) +
+        '</td></tr>').join('') + '</tbody></table>';
+  } catch (err) {
+    body.innerHTML = '<div class="modal-state">' + plEsc(err.message) + '</div>';
+  }
+}
+
+function showUsersPane(which){
+  document.getElementById('users-pane-users').style.display = which === 'users' ? 'block' : 'none';
+  document.getElementById('users-pane-audit').style.display = which === 'audit' ? 'block' : 'none';
+  document.getElementById('users-tab-users').classList.toggle('active', which === 'users');
+  document.getElementById('users-tab-audit').classList.toggle('active', which === 'audit');
+  if (which === 'audit') loadAudit();
+}
+
 syncPeriodControls();
-loadData(false);
+loadMe().then(ok => { if (ok) loadData(false); });
 </script>
 </body>
 </html>

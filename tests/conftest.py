@@ -12,3 +12,5 @@ os.environ.setdefault("ODOO_USERNAME", "test@example.com")
 os.environ.setdefault("ODOO_API_KEY", "test-key")
 os.environ.setdefault("DASHBOARD_USER", "testuser")
 os.environ.setdefault("DASHBOARD_PASSWORD", "testpass")
+# De testclient praat http; een Secure-cookie zou dan (terecht) niet bewaard worden.
+os.environ.setdefault("COOKIE_SECURE", "0")

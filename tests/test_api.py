@@ -58,16 +58,19 @@ def test_healthz_requires_no_auth_and_leaks_no_business_data():
     assert body["snapshot_scheduler"] is False
 
 
-def test_dashboard_requires_auth():
+def test_dashboard_sends_you_to_the_login_page_when_not_signed_in():
     client = TestClient(main.app)
-    resp = client.get("/")
-    assert resp.status_code == 401
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login"
 
 
 def test_dashboard_rejects_wrong_password():
     client = TestClient(main.app)
-    resp = client.get("/", headers=_auth_header("testuser", "wrong-password"))
-    assert resp.status_code == 401
+    resp = client.get("/", headers=_auth_header("testuser", "wrong-password"),
+                      follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login"
 
 
 def test_dashboard_accepts_correct_credentials():
@@ -721,3 +724,232 @@ def test_adding_an_extra_line_without_a_database_gives_a_clear_message(monkeypat
                        json={"label": "Financiering", "amount": 500000, "date": "2026-11-01"})
     assert resp.status_code == 503
     assert "DATABASE_URL" in resp.json()["detail"]
+
+
+# --- Inloggen en rechten -------------------------------------------------------
+
+from app import auth   # noqa: E402 — bewust hier, na de omgevingsvariabelen uit conftest
+
+
+@pytest.fixture(autouse=True)
+def _clean_sessions():
+    auth._env_sessions.clear()
+    auth._attempts.clear()
+    yield
+    auth._env_sessions.clear()
+    auth._attempts.clear()
+
+
+def _fake_db_user(monkeypatch, email="manager@basetime.nl", role="manager",
+                  password="een lang genoeg wachtwoord", active=True):
+    """Zet een nep-database neer met precies één gebruiker, zodat de rolcontrole
+    getest kan worden zonder Postgres."""
+    row = {
+        "id": 7, "email": email, "name": "Test Gebruiker", "role": role,
+        "password_hash": auth.hash_password(password), "active": active,
+        "invite_hash": None, "invite_expires": None, "last_login_at": None,
+    }
+    sessions = {}
+    monkeypatch.setattr(main.db, "configured", lambda: True)
+    monkeypatch.setattr(auth.db, "configured", lambda: True)
+    monkeypatch.setattr(auth.db, "get_user_by_email",
+                        lambda e: row if e.lower() == email.lower() else None)
+    monkeypatch.setattr(auth.db, "create_session",
+                        lambda token_hash, user_id, hours: sessions.__setitem__(token_hash, user_id))
+    monkeypatch.setattr(auth.db, "session_user", lambda th: row if th in sessions else None)
+    monkeypatch.setattr(auth.db, "delete_session", lambda th: sessions.pop(th, None))
+    monkeypatch.setattr(auth.db, "touch_login", lambda uid: None)
+    monkeypatch.setattr(auth.db, "add_audit", lambda *a, **k: None)
+    return row
+
+
+def _login(client, email, password):
+    return client.post("/login", data={"email": email, "password": password},
+                       follow_redirects=False)
+
+
+def test_a_wrong_password_does_not_get_you_a_session():
+    client = TestClient(main.app)
+    resp = _login(client, "testuser", "fout")
+    assert resp.status_code == 401
+    assert auth.COOKIE_NAME not in resp.cookies
+    # bewust één melding voor beide fouten: anders verklap je welke accounts bestaan
+    assert "Onbekende combinatie" in resp.text
+
+
+def test_the_environment_admin_can_always_log_in():
+    client = TestClient(main.app)
+    resp = _login(client, "testuser", "testpass")
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/"
+    me = client.get("/api/me").json()
+    assert me["role"] == "beheerder"
+    assert me["source"] == "omgeving"
+    assert me["may_edit"] is True
+
+
+def test_logging_out_ends_the_session():
+    client = TestClient(main.app)
+    _login(client, "testuser", "testpass")
+    assert client.get("/api/me").status_code == 200
+    client.get("/logout", follow_redirects=False)
+    assert client.get("/api/me").status_code == 401
+
+
+def test_a_manager_may_read_the_figures(monkeypatch):
+    _fake_db_user(monkeypatch, role="manager")
+    monkeypatch.setattr(main.kpis, "build_dashboard_payload", lambda **kw: FAKE_PAYLOAD)
+    main._cache.clear()
+    client = TestClient(main.app)
+    _login(client, "manager@basetime.nl", "een lang genoeg wachtwoord")
+    assert client.get("/api/kpis").status_code == 200
+    assert client.get("/", follow_redirects=False).status_code == 200
+
+
+def test_a_manager_may_not_see_the_booking_lines(monkeypatch):
+    """De kern van de rechtenstructuur: dit endpoint is de doorklik naar de boeking,
+    inclusief de personeelsrekeningen. Alleen verbergen in het scherm is niet genoeg."""
+    _fake_db_user(monkeypatch, role="manager")
+    client = TestClient(main.app)
+    _login(client, "manager@basetime.nl", "een lang genoeg wachtwoord")
+    resp = client.get("/api/pl/lines?codes=400100&date_from=2026-08-01&date_to=2026-09-01")
+    assert resp.status_code == 403
+    assert "Financieel" in resp.json()["detail"]
+
+
+def test_a_manager_may_not_change_the_payment_plan(monkeypatch):
+    _fake_db_user(monkeypatch, role="manager")
+    client = TestClient(main.app)
+    _login(client, "manager@basetime.nl", "een lang genoeg wachtwoord")
+    resp = client.post("/api/cash/plan", json={"key": "ap:partner:5", "mode": "defer"})
+    assert resp.status_code == 403
+
+
+def test_a_manager_may_not_manage_users(monkeypatch):
+    _fake_db_user(monkeypatch, role="manager")
+    client = TestClient(main.app)
+    _login(client, "manager@basetime.nl", "een lang genoeg wachtwoord")
+    assert client.get("/api/users").status_code == 403
+
+
+def test_a_financial_user_may_see_the_lines_but_not_manage_users(monkeypatch):
+    _fake_db_user(monkeypatch, role="financieel")
+    monkeypatch.setattr(main.kpis, "fetch_pl_lines",
+                        lambda client, codes, start, end: {"lines": [], "total": 0.0})
+    monkeypatch.setattr(main.kpis, "get_client", lambda: object())
+    main._pl_lines_cache.clear()
+    client = TestClient(main.app)
+    _login(client, "manager@basetime.nl", "een lang genoeg wachtwoord")
+    assert client.get(
+        "/api/pl/lines?codes=430500&date_from=2026-08-01&date_to=2026-09-01"
+    ).status_code == 200
+    assert client.get("/api/users").status_code == 403
+
+
+def test_an_api_call_without_a_session_is_refused_without_a_browser_popup():
+    """401 zonder WWW-Authenticate: anders toont de browser zijn eigen inlogvenster in
+    plaats van ons inlogscherm."""
+    client = TestClient(main.app)
+    resp = client.get("/api/pl")
+    assert resp.status_code == 401
+    assert "www-authenticate" not in {k.lower() for k in resp.headers}
+
+
+def test_the_environment_account_still_works_over_basic_auth_for_a_scheduler(monkeypatch):
+    """Een externe planner die POST /api/snapshot aanroept moet blijven werken."""
+    monkeypatch.setattr(main.db, "configured", lambda: True)
+    monkeypatch.setattr(main.snapshot.db, "configured", lambda: True)
+    monkeypatch.setattr(main.snapshot.db, "snapshot_exists_today", lambda: True)
+    monkeypatch.setattr(main.snapshot.db, "save_snapshot", lambda standen: None)
+    monkeypatch.setattr(main.snapshot.kpis, "build_dashboard_payload", lambda **kw: FAKE_PAYLOAD)
+    monkeypatch.setattr(auth.db, "add_audit", lambda *a, **k: None)
+    client = TestClient(main.app)
+    resp = client.post("/api/snapshot", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 200
+
+
+def test_a_personal_account_cannot_use_basic_auth(monkeypatch):
+    """Persoonlijke accounts loggen in met een sessie; via basic-auth zou het wachtwoord
+    bij elk verzoek meegaan."""
+    _fake_db_user(monkeypatch, role="financieel")
+    client = TestClient(main.app)
+    resp = client.get("/api/pl",
+                      headers=_auth_header("manager@basetime.nl", "een lang genoeg wachtwoord"))
+    assert resp.status_code == 401
+
+
+def test_a_disabled_account_cannot_log_in(monkeypatch):
+    _fake_db_user(monkeypatch, role="financieel", active=False)
+    client = TestClient(main.app)
+    resp = _login(client, "manager@basetime.nl", "een lang genoeg wachtwoord")
+    assert resp.status_code == 401
+
+
+def test_too_many_failed_attempts_are_slowed_down():
+    client = TestClient(main.app)
+    for _ in range(config.LOGIN_MAX_ATTEMPTS):
+        _login(client, "iemand@basetime.nl", "fout")
+    resp = _login(client, "iemand@basetime.nl", "fout")
+    assert resp.status_code == 429
+    assert "Te veel mislukte pogingen" in resp.text
+
+
+def test_an_admin_invites_a_user_and_never_handles_a_password(monkeypatch):
+    created = {}
+    monkeypatch.setattr(main.db, "configured", lambda: True)
+    monkeypatch.setattr(auth.db, "configured", lambda: True)
+    monkeypatch.setattr(main.db, "get_user_by_email", lambda e: None)
+    monkeypatch.setattr(main.db, "create_user",
+                        lambda email, name, role: created.update(
+                            {"id": 12, "email": email, "name": name, "role": role}) or created)
+    monkeypatch.setattr(auth.db, "set_invite",
+                        lambda uid, invite_hash, hours: created.update({"invite": invite_hash}))
+    monkeypatch.setattr(auth.db, "add_audit", lambda *a, **k: None)
+
+    client = TestClient(main.app)
+    _login(client, "testuser", "testpass")
+    resp = client.post("/api/users", json={"email": "nieuw@basetime.nl", "name": "Nieuw",
+                                           "role": "manager"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "/uitnodiging?token=" in body["invite_url"]
+    # alleen de hash gaat de database in, nooit het token zelf
+    token = body["invite_url"].split("token=")[1]
+    assert created["invite"] == auth.token_hash(token)
+    assert token not in created["invite"]
+
+
+def test_a_role_that_does_not_exist_is_refused(monkeypatch):
+    monkeypatch.setattr(main.db, "configured", lambda: True)
+    monkeypatch.setattr(main.db, "get_user_by_email", lambda e: None)
+    client = TestClient(main.app)
+    _login(client, "testuser", "testpass")
+    resp = client.post("/api/users", json={"email": "x@basetime.nl", "role": "directeur"})
+    assert resp.status_code == 400
+    assert "Onbekende rol" in resp.json()["detail"]
+
+
+def test_managing_users_without_a_database_explains_why(monkeypatch):
+    client = TestClient(main.app)
+    _login(client, "testuser", "testpass")
+    resp = client.get("/api/users")
+    assert resp.status_code == 503
+    assert "database" in resp.json()["detail"]
+
+
+def test_the_invite_link_uses_https_behind_the_railway_proxy(monkeypatch):
+    """Achter de proxy ziet de app zelf http; de link die de beheerder doorstuurt moet
+    wél de https-buitenkant zijn."""
+    monkeypatch.setattr(main.db, "configured", lambda: True)
+    monkeypatch.setattr(auth.db, "configured", lambda: True)
+    monkeypatch.setattr(main.db, "get_user_by_email", lambda e: None)
+    monkeypatch.setattr(main.db, "create_user",
+                        lambda email, name, role: {"id": 3, "email": email, "name": name,
+                                                   "role": role, "active": True})
+    monkeypatch.setattr(auth.db, "set_invite", lambda *a, **k: None)
+    monkeypatch.setattr(auth.db, "add_audit", lambda *a, **k: None)
+    client = TestClient(main.app)
+    _login(client, "testuser", "testpass")
+    resp = client.post("/api/users", json={"email": "x@basetime.nl", "role": "manager"},
+                       headers={"x-forwarded-proto": "https"})
+    assert resp.json()["invite_url"].startswith("https://")
