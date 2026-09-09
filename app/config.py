@@ -70,6 +70,20 @@ PL_REPORT_ID = int(_get_env("PL_REPORT_ID", "25"))
 # (bij Basetime: Stock, marge Locator One/Two) vallen daarmee vanzelf buiten de boom.
 PL_RESULT_LINE_CODE = _get_env("PL_RESULT_LINE_CODE", "NL_RESNB_COPY")
 
+# Sjabloon voor een directe link naar een record in Odoo, gebruikt door de doorklik op
+# de W&V-tab ("open in Odoo"). De standaard is Odoo's eigen redirect-endpoint — datzelfde
+# adres zit onder de knoppen in Odoo's notificatiemails, werkt in alle recente versies en
+# stuurt een niet-ingelogde gebruiker eerst langs het inlogscherm en daarna naar het
+# record. Werkt dit in een andere omgeving niet, dan kan het klassieke formaat er ook in:
+#   {base}/web#id={id}&model={model}&view_type=form
+ODOO_RECORD_URL_TEMPLATE = _get_env(
+    "ODOO_RECORD_URL_TEMPLATE", "{base}/mail/view?model={model}&res_id={id}"
+)
+
+# Maximum aantal boekingsregels dat het doorklikscherm ophaalt. Boven dit aantal wordt
+# de lijst afgekapt (met melding); het totaalbedrag blijft wel het volledige bedrag.
+PL_DETAIL_LINE_LIMIT = int(_get_env("PL_DETAIL_LINE_LIMIT", "500"))
+
 # --- Cache ------------------------------------------------------------------
 # Hoe lang (in seconden) een opgehaalde KPI-set warm blijft voordat een nieuwe
 # paginabezoek een verse Odoo-query triggert. 900s = 15 minuten. Zet lager als je

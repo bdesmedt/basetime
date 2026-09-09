@@ -432,3 +432,34 @@ def test_adding_a_rubriek_needs_a_name_and_a_parent():
         headers=_auth_header("testuser", "testpass"),
     )
     assert resp.status_code == 400
+
+
+def test_api_pl_lines_needs_a_valid_date_range():
+    client = TestClient(main.app)
+    headers = _auth_header("testuser", "testpass")
+    assert client.get("/api/pl/lines?codes=430500&date_from=gisteren&date_to=2026-09-01",
+                      headers=headers).status_code == 400
+    assert client.get("/api/pl/lines?codes=430500&date_from=2026-09-01&date_to=2026-08-01",
+                      headers=headers).status_code == 400
+    assert client.get("/api/pl/lines?codes=&date_from=2026-08-01&date_to=2026-09-01",
+                      headers=headers).status_code == 400
+
+
+def test_api_pl_lines_passes_the_codes_and_period_through(monkeypatch):
+    seen = {}
+
+    def fake_fetch(client, codes, start, end, *args, **kwargs):
+        seen["codes"] = codes
+        seen["start"] = start.isoformat()
+        seen["end"] = end.isoformat()
+        return {"lines": [], "total": 0.0, "count": 0, "truncated": False}
+
+    monkeypatch.setattr(main.kpis, "fetch_pl_lines", fake_fetch)
+    monkeypatch.setattr(main.kpis, "get_client", lambda: object())
+    main._pl_lines_cache.clear()
+
+    client = TestClient(main.app)
+    resp = client.get("/api/pl/lines?codes=430500,431000&date_from=2026-08-01&date_to=2026-09-01",
+                      headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 200
+    assert seen == {"codes": ["430500", "431000"], "start": "2026-08-01", "end": "2026-09-01"}

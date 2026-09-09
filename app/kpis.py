@@ -2026,3 +2026,98 @@ def layout_summary() -> dict:
         "override_count": len(layout.get("overrides") or {}),
         "custom_count": len(layout.get("custom") or []),
     }
+
+
+def odoo_record_url(model: str, record_id: int) -> str:
+    """Directe link naar een record in Odoo. Zie config.ODOO_RECORD_URL_TEMPLATE."""
+    return config.ODOO_RECORD_URL_TEMPLATE.format(
+        base=config.ODOO_URL.rstrip("/"), model=model, id=record_id
+    )
+
+
+def fetch_pl_lines(
+    client: OdooClient,
+    codes: list[str],
+    start: date,
+    end: date,
+    limit: int | None = None,
+) -> dict:
+    """De boekingsregels achter één bedrag op de W&V-tab.
+
+    Gebruikt exact dezelfde afbakening als de opgetelde cel (geboekt, deze rekeningen,
+    deze periode), zodat de lijst per definitie optelt tot het bedrag waarop is geklikt.
+    Het totaal komt uit een aparte optelling en klopt dus ook als de lijst is afgekapt.
+
+    De bedragen komen als ruw Odoo-saldo terug (omzet dus negatief). Het scherm draait
+    het teken om met het teken dat bij de rekening hoort — hetzelfde teken dat in de
+    W&V-tabel wordt gebruikt."""
+    limit = limit or config.PL_DETAIL_LINE_LIMIT
+    if not codes:
+        return {"lines": [], "total": 0.0, "count": 0, "truncated": False}
+
+    accounts = client.search_read(
+        "account.account", [["code", "in", list(codes)]], ["id", "code", "name"]
+    )
+    if not accounts:
+        return {"lines": [], "total": 0.0, "count": 0, "truncated": False}
+    by_id = {a["id"]: a for a in accounts}
+
+    domain = [
+        ["parent_state", "=", "posted"],
+        ["account_id", "in", list(by_id)],
+        ["date", ">=", _iso(start)],
+        ["date", "<", _iso(end)],
+    ]
+    totals = client.read_group("account.move.line", domain, ["balance:sum"], ["account_id"])
+    total = round(sum(row.get("balance") or 0.0 for row in totals), 2)
+    # Odoo geeft hier normaal één regel per rekening terug, maar we tellen op in plaats van
+    # te overschrijven: zou er ooit toch fijner gegroepeerd worden, dan klopt het totaal nog.
+    per_account: dict[int, float] = {}
+    for row in totals:
+        account = row.get("account_id")
+        if not account:
+            continue
+        per_account[account[0]] = round(
+            per_account.get(account[0], 0.0) + (row.get("balance") or 0.0), 2
+        )
+
+    rows = client.search_read(
+        "account.move.line",
+        domain,
+        ["id", "date", "move_id", "move_name", "name", "ref", "partner_id",
+         "journal_id", "account_id", "balance", "move_type"],
+        limit=limit + 1,
+        order="date desc, id desc",
+    )
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+
+    lines = []
+    for row in rows:
+        move = row.get("move_id") or [None, ""]
+        partner = row.get("partner_id") or [None, ""]
+        journal = row.get("journal_id") or [None, ""]
+        account = by_id.get((row.get("account_id") or [None])[0]) if row.get("account_id") else None
+        lines.append({
+            "date": row.get("date"),
+            "move_id": move[0],
+            "move_name": row.get("move_name") or move[1] or "",
+            "move_url": odoo_record_url("account.move", move[0]) if move[0] else None,
+            "label": row.get("name") or "",
+            "ref": row.get("ref") or "",
+            "partner": partner[1] or "",
+            "journal": journal[1] or "",
+            "balance": round(row.get("balance") or 0.0, 2),
+            "account_code": (account or {}).get("code") or "",
+            "move_type": row.get("move_type") or "entry",
+        })
+
+    return {
+        "lines": lines,
+        "total": total,
+        "total_per_account": {by_id[a]["code"]: v for a, v in per_account.items() if a in by_id},
+        "count": len(lines),
+        "truncated": truncated,
+        "limit": limit,
+        "accounts": [{"code": a["code"], "name": a["name"]} for a in accounts],
+    }

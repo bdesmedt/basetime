@@ -35,6 +35,7 @@ _cache: dict[str, dict] = {}
 _detail_cache: dict[str, dict] = {}
 _inventory_cache: dict[str, dict] = {}
 _pl_cache: dict[str, dict] = {}
+_pl_lines_cache: dict[str, dict] = {}
 
 
 def _parse_period(months: int | None, date_from: str | None, date_to: str | None) -> dict:
@@ -162,6 +163,35 @@ def api_pl(
     period = _parse_period(months, date_from, date_to)
     return _cached(
         _pl_cache, _period_key(period), refresh, lambda: kpis.build_pl_payload(**period)
+    )
+
+
+@app.get("/api/pl/lines")
+def api_pl_lines(
+    codes: str = Query(..., description="Komma-gescheiden grootboekcodes"),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    refresh: bool = Query(False),
+    _auth: None = Depends(check_auth),
+):
+    """De boekingsregels achter één bedrag op de W&V-tab. `date_to` is exclusief, net als
+    in de rest van het dashboard."""
+    wanted = [c.strip() for c in codes.split(",") if c.strip()]
+    if not wanted:
+        raise HTTPException(status_code=400, detail="Geef minstens één rekeningcode mee.")
+    if len(wanted) > 200:
+        raise HTTPException(status_code=400, detail="Te veel rekeningen in één keer.")
+    try:
+        start = datetime.strptime(date_from, "%Y-%m-%d").date()
+        end = datetime.strptime(date_to, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Ongeldige datum: gebruik JJJJ-MM-DD.")
+    if end <= start:
+        raise HTTPException(status_code=400, detail="De einddatum ligt voor de begindatum.")
+    key = f"{','.join(sorted(wanted))}|{date_from}|{date_to}"
+    return _cached(
+        _pl_lines_cache, key, refresh,
+        lambda: kpis.fetch_pl_lines(kpis.get_client(), wanted, start, end),
     )
 
 

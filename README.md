@@ -7,7 +7,8 @@ intake, recurring/subscription-omzet, brutomarge, inkoopbacklog, gewogen pipelin
 gefactureerde omzet, en de benodigde break-evenomzet per maand.
 
 Vier tabbladen: **Overzicht** (de KPI's), **Winst & verlies** (de W&V tot op
-grootboekniveau, met een aanpasbare rubrieksindeling), **Voorraad** en **Actieplan**.
+grootboekniveau, met een aanpasbare rubrieksindeling en doorklik naar de boekingsregels),
+**Voorraad** en **Actieplan**.
 
 - **Backend**: Python (FastAPI), praat met Odoo via de officiële externe XML-RPC-API.
 - **Frontend**: één HTML-pagina (in `app/templates/dashboard.html`), haalt de cijfers op
@@ -99,7 +100,8 @@ Optioneel (staan anders op een verstandige standaardwaarde — zie `app/config.p
 `BANK_ACCOUNT_CODES`, `MAIN_OPERATING_BANK_CODE`, `CREDIT_LIMIT`,
 `FIXED_MONTHLY_COSTS`, `SUBSCRIPTION_ACCOUNT_CODES`,
 `REVENUE_EXCLUDED_ACCOUNT_CODES`, `DEFERRED_REVENUE_ACCOUNT_CODE`,
-`DEFERRED_PRODUCT_NAME_PREFIXES`, `PL_REPORT_ID`, `PL_RESULT_LINE_CODE`.
+`DEFERRED_PRODUCT_NAME_PREFIXES`, `PL_REPORT_ID`, `PL_RESULT_LINE_CODE`,
+`PL_DETAIL_LINE_LIMIT`, `ODOO_RECORD_URL_TEMPLATE`.
 
 Na het opslaan start Railway automatisch een nieuwe deployment. Onder **Settings →
 Networking** kun je een publieke URL genereren (`*.up.railway.app`) of een eigen domein
@@ -168,6 +170,13 @@ pytest
   "Terug naar Odoo" zet je alles terug zoals het Odoo-rapport het berekent. Het knopje
   **i** achter een rubriek laat zien welke codereeks Odoo gebruikt en welke rekeningen
   er nu in vallen.
+- **Doorklikken naar de boeking**: klik op een bedrag in de W&V-tabel (op een rubriek- of
+  rekeningregel) en je krijgt de boekingsregels erachter, met leverancier, omschrijving,
+  dagboek en een link naar het boekstuk in Odoo — daar zit ook de factuur-PDF aan vast.
+  De lijst gebruikt exact dezelfde afbakening als het bedrag waarop je klikte, en de
+  regel onderaan het venster laat zien dat beide op elkaar aansluiten. Boven
+  `PL_DETAIL_LINE_LIMIT` regels wordt de lijst afgekapt; het getoonde totaal blijft dan
+  wél het volledige bedrag. Wie op een boekstuk klikt heeft een Odoo-account nodig.
 - **Ander W&V-rapport als basis**: `PL_REPORT_ID` (het id van het `account.report`-record
   in Odoo) en `PL_RESULT_LINE_CODE` (de code van de regel die het eindresultaat
   berekent). Alles waar die regel op steunt vormt de W&V-boom; losse memoblokken
@@ -184,6 +193,12 @@ pytest
   gaat het (augustus 2026) om rekening 481000 "Depreciation Buildings / conversions":
   de afschrijvingsregels van het V2-rapport pakken 480, 482 en 483, maar niet 481. De
   controleregel onder de tabel benoemt dit bedrag expliciet.
+- **Niet elke kostenregel heeft een factuur achter zich.** De doorklik komt altijd uit
+  bij de boeking, maar bij afschrijvingen (480xxx–483xxx, uit de activaregistratie),
+  kostprijs omzet (700500, uit de voorraadwaardering bij een periodiek voorraadstelsel)
+  en lonen (één journaalpost per maand uit de salarisverwerking) is er geen onderliggend
+  document. Bij de rekeningen die door inkoopfacturen worden gevoed — 43xxx, 44xxx,
+  45xxx, 46xxx — kom je wél tot de factuur.
 - **Het teken van een rekening blijft bij de rekening.** Sleep je een omzetrekening naar
   een kostenrubriek, dan houdt hij zijn omgedraaide teken. Dat is voorspelbaar, maar
   betekent wel dat zo'n verplaatsing een negatief bedrag in de kosten kan opleveren.

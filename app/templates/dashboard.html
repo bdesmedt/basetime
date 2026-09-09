@@ -244,6 +244,11 @@
   .pl-movebtn { font: inherit; font-size: 10.5px; padding: 0 6px; border-radius: 5px; cursor: pointer;
                 border: 1px solid var(--border); background: var(--surface-1); color: var(--text-muted); margin-left: 6px; }
   .pl-movebtn:hover { color: var(--text-primary); border-color: var(--series-1); }
+  td.pl-click { cursor: pointer; }
+  td.pl-click:hover { text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+  .pl-lines-table a { color: var(--series-1); text-decoration: none; }
+  .pl-lines-table a:hover { text-decoration: underline; }
+  .pl-lines-table td.num { font-variant-numeric: tabular-nums; }
   .pl-foot { font-size: 11.5px; color: var(--text-muted); padding: 9px 14px; border-top: 1px solid var(--border);
              background: var(--surface-2); white-space: normal; }
   .pl-pop { position: fixed; z-index: 90; max-width: 340px; display: none; background: var(--surface-1);
@@ -626,6 +631,25 @@
     <div class="modal-body" id="detail-modal-body">
       <div class="modal-state">Laden…</div>
     </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="pl-lines-modal" onclick="if(event.target===this) closePlLines()">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <div>
+        <h3 id="pl-lines-title">Boekingsregels</h3>
+        <p id="pl-lines-sub"></p>
+      </div>
+      <button class="modal-close" onclick="closePlLines()">Sluiten ✕</button>
+    </div>
+    <div class="modal-search">
+      <input type="text" id="pl-lines-search" placeholder="Zoeken op leverancier, omschrijving of boekstuk…" oninput="renderPlLines()">
+    </div>
+    <div class="modal-body" id="pl-lines-body">
+      <div class="modal-state">Laden…</div>
+    </div>
+    <div class="pl-foot" id="pl-lines-foot"></div>
   </div>
 </div>
 
@@ -1392,7 +1416,7 @@ function closeDetailModal(){
   document.getElementById('detail-modal').classList.remove('open');
 }
 
-document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape') closeDetailModal(); });
+document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape') { closeDetailModal(); closePlLines(); } });
 
 function filterDetailModal(){
   renderDetailModal();
@@ -1892,6 +1916,23 @@ function plIndexTree(){
 
 function plMonthLabel(m){ return m.label + (m.partial ? '*' : ''); }
 
+// Maandsleutels zijn "2026-08-01"; de einddatum die het dashboard hanteert is altijd
+// exclusief, dus de 1e van de maand erna.
+function plMonthRange(key){
+  const y = parseInt(key.slice(0, 4), 10), m = parseInt(key.slice(5, 7), 10);
+  const to = (m === 12) ? (y + 1) + '-01-01' : y + '-' + String(m + 1).padStart(2, '0') + '-01';
+  return { from: key, to: to };
+}
+function plShiftYear(key, years){
+  return String(parseInt(key.slice(0, 4), 10) + years) + key.slice(4);
+}
+function plSpanRange(list, shiftYears){
+  if (!list.length) return null;
+  const first = plShiftYear(list[0].key, shiftYears || 0);
+  const last = plShiftYear(list[list.length - 1].key, shiftYears || 0);
+  return { from: first, to: plMonthRange(last).to };
+}
+
 function plYearSpanLabel(months, shiftYears){
   if (!months.length) return '';
   const y = (k) => (parseInt(k.slice(0, 4), 10) + (shiftYears || 0));
@@ -1904,9 +1945,13 @@ function plBuildModes(){
   const all = plData.months;
   const complete = all.filter(m => !m.partial);
   const sum = (a, list) => list.reduce((s, m) => s + (a.m[m.key] || 0), 0);
-  const monthCol = (m) => ({ key: m.key, label: plMonthLabel(m), val: a => a.m[m.key] || 0 });
+  const monthCol = (m) => ({
+    key: m.key, label: plMonthLabel(m), val: a => a.m[m.key] || 0,
+    range: () => plMonthRange(m.key),
+  });
   const totalCol = (list, label) => ({
     key: 'tot', label: label || 'Totaal', sticky: true, val: a => sum(a, list),
+    range: () => plSpanRange(list, 0),
   });
 
   const modes = [];
@@ -1915,8 +1960,10 @@ function plBuildModes(){
       id: 'period',
       label: 'Periode · vergeleken met vorig jaar',
       cols: [
-        { key: 'cur',  label: plYearSpanLabel(complete, 0), val: a => sum(a, complete) },
-        { key: 'prev', label: plYearSpanLabel(complete, -1), val: a => a.prev },
+        { key: 'cur',  label: plYearSpanLabel(complete, 0), val: a => sum(a, complete),
+          range: () => plSpanRange(complete, 0) },
+        { key: 'prev', label: plYearSpanLabel(complete, -1), val: a => a.prev,
+          range: () => plSpanRange(complete, -1) },
         { key: 'd', label: 'Δ',   type: 'delta', a: 'cur', b: 'prev', sep: true },
         { key: 'p', label: 'Δ %', type: 'pct',   a: 'cur', b: 'prev' },
       ],
@@ -1941,8 +1988,10 @@ function plBuildModes(){
     modes.push({
       id: 'mm', label: plMonthLabel(a0) + ' · vergeleken met ' + plMonthLabel(a1),
       cols: [
-        { key: 'c0', label: plMonthLabel(a0), val: a => a.m[a0.key] || 0 },
-        { key: 'c1', label: plMonthLabel(a1), val: a => a.m[a1.key] || 0 },
+        { key: 'c0', label: plMonthLabel(a0), val: a => a.m[a0.key] || 0,
+          range: () => plMonthRange(a0.key) },
+        { key: 'c1', label: plMonthLabel(a1), val: a => a.m[a1.key] || 0,
+          range: () => plMonthRange(a1.key) },
         { key: 'd', label: 'Δ',   type: 'delta', a: 'c0', b: 'c1', sep: true },
         { key: 'p', label: 'Δ %', type: 'pct',   a: 'c0', b: 'c1' },
       ],
@@ -2003,11 +2052,17 @@ function plCells(getBase, invert){
   });
 }
 
-function plPutCells(tr, cells){
-  cells.forEach(c => {
+function plPutCells(tr, cells, onCell){
+  cells.forEach((c, i) => {
     const td = tr.insertCell();
     td.textContent = c.t;
     td.className = (c.c || '') + (c.sep ? ' sep' : '') + (c.sticky ? ' pl-r' : '');
+    const col = plMode().cols[i];
+    if (onCell && col && col.range){
+      td.classList.add('pl-click');
+      td.title = 'Bekijk de boekingsregels achter dit bedrag';
+      td.onclick = () => onCell(col);
+    }
   });
 }
 
@@ -2074,7 +2129,8 @@ function plRenderRubriek(tbody, node, level){
     onDelete: (node.custom && plCanEdit()) ? () => deletePlRubriek(node) : null,
   });
   if (node.unallocated && accts.length) tr.classList.add('pl-unalloc');
-  plPutCells(tr, plCells(col => plNodeValue(node, col), invert));
+  plPutCells(tr, plCells(col => plNodeValue(node, col), invert),
+             accts.length ? (col => openPlLines(node.name, accts, col)) : null);
   plMakeDropTarget(tr, node.id);
   if (isOpen){
     accts.slice().sort((a, b) => a.code.localeCompare(b.code))
@@ -2092,7 +2148,8 @@ function plRenderAccount(tbody, a, invert){
     moved: a.rubriek !== a.default_rubriek,
     onMove: plCanEdit() ? () => openPlMoveDialog(a) : null,
   });
-  plPutCells(tr, plCells(col => col.val(a), invert));
+  plPutCells(tr, plCells(col => col.val(a), invert),
+             col => openPlLines(a.code + ' ' + a.name, [a], col));
   if (!plCanEdit()) return;
   tr.addEventListener('dragstart', (e) => {
     e.dataTransfer.setData('text/plain', a.code);
@@ -2352,6 +2409,115 @@ function plDefaultOpen(){
     (n.children || []).forEach(c => { if (c.kind === 'group') open.add(c.id); });
   });
   return open;
+}
+
+// --- doorklik naar de boekingsregels achter een bedrag ----------------------
+// De lijst gebruikt exact dezelfde afbakening als de cel waarop je klikt, dus hij telt
+// per definitie op tot dat bedrag. De onderste regel laat dat ook zien.
+
+let plLinesState = { data: null, signs: {}, expected: 0, title: '', sub: '' };
+
+function plEsc(s){
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function openPlLines(title, accounts, col){
+  const range = col.range && col.range();
+  if (!range || !accounts.length) return;
+  const signs = {};
+  accounts.forEach(a => { signs[a.code] = a.sign; });
+  const expected = accounts.reduce((s, a) => s + col.val(a), 0);
+
+  plLinesState = { data: null, signs: signs, expected: expected, title: title, sub: '' };
+  document.getElementById('pl-lines-title').textContent = title + ' — ' + col.label;
+  document.getElementById('pl-lines-sub').textContent =
+    'Bedrag in de tabel: ' + fmtEUR0.format(expected) + ' · ' + accounts.length +
+    (accounts.length === 1 ? ' grootboekrekening' : ' grootboekrekeningen');
+  document.getElementById('pl-lines-search').value = '';
+  document.getElementById('pl-lines-body').innerHTML =
+    '<div class="modal-state">Boekingsregels ophalen uit Odoo…</div>';
+  document.getElementById('pl-lines-foot').textContent = '';
+  document.getElementById('pl-lines-modal').classList.add('open');
+
+  const codes = accounts.map(a => a.code).join(',');
+  try {
+    const resp = await fetch('/api/pl/lines?codes=' + encodeURIComponent(codes) +
+                             '&date_from=' + range.from + '&date_to=' + range.to);
+    if (!resp.ok){
+      let detail = 'HTTP ' + resp.status;
+      try { const j = await resp.json(); if (j.detail) detail = j.detail; } catch (e) {}
+      throw new Error(detail);
+    }
+    plLinesState.data = await resp.json();
+    renderPlLines();
+  } catch (err) {
+    document.getElementById('pl-lines-body').innerHTML =
+      '<div class="modal-state">Kon de boekingsregels niet ophalen: ' + plEsc(err.message) + '</div>';
+  }
+}
+
+function closePlLines(){
+  document.getElementById('pl-lines-modal').classList.remove('open');
+}
+
+function renderPlLines(){
+  const data = plLinesState.data;
+  if (!data) return;
+  const q = (document.getElementById('pl-lines-search').value || '').trim().toLowerCase();
+  const sign = (code) => plLinesState.signs[code] || 1;
+
+  const rows = data.lines.filter(l => !q ||
+    (l.partner + ' ' + l.label + ' ' + l.move_name + ' ' + l.ref + ' ' + l.journal)
+      .toLowerCase().includes(q));
+
+  const body = document.getElementById('pl-lines-body');
+  if (!rows.length){
+    body.innerHTML = '<div class="modal-state">' +
+      (data.lines.length ? 'Geen regels die aan het zoekwoord voldoen.' : 'Geen boekingsregels in deze periode.') +
+      '</div>';
+  } else {
+    let s = '<table class="data-table pl-lines-table"><thead><tr>' +
+      '<th>Datum</th><th>Boekstuk</th><th>Relatie</th><th>Omschrijving</th>' +
+      '<th>Dagboek</th><th>Bedrag</th></tr></thead><tbody>';
+    rows.forEach(l => {
+      const bedrag = l.balance * sign(l.account_code);
+      const boekstuk = l.move_url
+        ? '<a href="' + plEsc(l.move_url) + '" target="_blank" rel="noopener">' +
+          plEsc(l.move_name || 'openen') + ' ↗</a>'
+        : plEsc(l.move_name);
+      s += '<tr>' +
+        '<td class="name">' + plEsc(l.date || '') + '</td>' +
+        '<td>' + boekstuk + '</td>' +
+        '<td>' + plEsc(l.partner) + '</td>' +
+        '<td>' + plEsc(l.label || l.ref) + '</td>' +
+        '<td>' + plEsc(l.journal) + '</td>' +
+        '<td class="num">' + fmtEUR0.format(bedrag) + '</td>' +
+        '</tr>';
+    });
+    s += '</tbody></table>';
+    body.innerHTML = s;
+  }
+
+  // controleregel: telt de lijst op tot het bedrag waarop is geklikt?
+  const perAccount = data.total_per_account || {};
+  const signedTotal = Object.keys(perAccount)
+    .reduce((sum, code) => sum + perAccount[code] * sign(code), 0);
+  const diff = signedTotal - plLinesState.expected;
+  let foot = 'Alle regels samen: ' + fmtEUR0.format(signedTotal) +
+             ' · in de tabel: ' + fmtEUR0.format(plLinesState.expected) +
+             (Math.abs(diff) < 0.5 ? ' — sluit aan.' : ' — verschil ' + fmtEUR0.format(diff) + '.');
+  foot += ' ' + data.lines.length + ' regel' + (data.lines.length === 1 ? '' : 's');
+  if (q) foot += ', ' + rows.length + ' getoond';
+  if (data.truncated){
+    foot += '. <b>Let op:</b> alleen de ' + data.limit + ' meest recente regels zijn opgehaald; ' +
+            'het totaal hierboven is wel het volledige bedrag.';
+  } else {
+    foot += '.';
+  }
+  foot += ' Klik op een boekstuk om de boeking (en de bijlage) in Odoo te openen.';
+  document.getElementById('pl-lines-foot').innerHTML = foot;
 }
 
 async function loadPlData(forceRefresh){

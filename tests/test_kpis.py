@@ -1407,3 +1407,93 @@ def test_pl_reports_that_the_layout_is_not_stored_without_a_database():
                                   "message": "Geen database gekoppeld"})
     assert payload["layout"]["storage"] == "geen"
     assert payload["layout"]["override_count"] == 0
+
+
+# --- Doorklik naar de boekingsregels ----------------------------------------
+
+class FakeLinesClient(FakeOdooClient):
+    def __init__(self, line_count=3):
+        self.line_count = line_count
+        self.domains = []
+
+    def search_read(self, model, domain, fields, limit=0, order=None):
+        if model == "account.account":
+            wanted = set(domain[0][2])
+            return [
+                {"id": PL_ACCOUNT_IDS[c], "code": c, "name": PL_ACCOUNTS[c]}
+                for c in sorted(PL_ACCOUNTS) if c in wanted
+            ]
+        if model == "account.move.line":
+            self.domains.append(domain)
+            return [
+                {
+                    "id": i, "date": "2026-08-0%d" % (i + 1),
+                    "move_id": [900 + i, "BILL/2026/00%d" % i],
+                    "move_name": "BILL/2026/00%d" % i,
+                    "name": "Regel %d" % i, "ref": "",
+                    "partner_id": [7, "Leverancier BV"],
+                    "journal_id": [3, "Inkoopfacturen"],
+                    "account_id": [PL_ACCOUNT_IDS["430500"], "430500 Abonnementen"],
+                    "balance": 100.0, "move_type": "in_invoice",
+                }
+                for i in range(self.line_count)
+            ]
+        raise AssertionError(model)
+
+    def read_group(self, model, domain, fields, groupby, lazy=True):
+        return [{"account_id": [PL_ACCOUNT_IDS["430500"], "430500"], "balance": 450.0}]
+
+
+def test_pl_lines_use_the_same_scope_as_the_cell_and_report_the_full_total():
+    client = FakeLinesClient(line_count=3)
+    result = kpis.fetch_pl_lines(client, ["430500"], date(2026, 8, 1), date(2026, 9, 1))
+    domain = dict((d[0], d) for d in client.domains[0])
+    assert domain["parent_state"] == ["parent_state", "=", "posted"]
+    assert domain["date"][1] in (">=", "<")
+    assert ["date", ">=", "2026-08-01"] in client.domains[0]
+    assert ["date", "<", "2026-09-01"] in client.domains[0]
+    # het totaal komt uit een aparte optelling, niet uit de (mogelijk afgekapte) lijst
+    assert result["total"] == 450.0
+    assert result["total_per_account"] == {"430500": 450.0}
+    assert result["count"] == 3
+    assert result["truncated"] is False
+
+
+def test_pl_lines_are_capped_but_the_total_stays_complete():
+    client = FakeLinesClient(line_count=12)
+    result = kpis.fetch_pl_lines(client, ["430500"], date(2026, 8, 1), date(2026, 9, 1), limit=5)
+    assert result["count"] == 5
+    assert result["truncated"] is True
+    assert result["total"] == 450.0
+
+
+def test_pl_lines_carry_a_direct_link_to_the_booking_in_odoo():
+    client = FakeLinesClient(line_count=1)
+    result = kpis.fetch_pl_lines(client, ["430500"], date(2026, 8, 1), date(2026, 9, 1))
+    url = result["lines"][0]["move_url"]
+    assert url.startswith(config.ODOO_URL.rstrip("/"))
+    assert "account.move" in url
+    assert "900" in url
+
+
+def test_pl_lines_for_an_unknown_account_code_return_nothing_instead_of_everything():
+    class Empty(FakeOdooClient):
+        def search_read(self, model, domain, fields, limit=0, order=None):
+            return []
+    result = kpis.fetch_pl_lines(Empty(), ["123456"], date(2026, 8, 1), date(2026, 9, 1))
+    assert result == {"lines": [], "total": 0.0, "count": 0, "truncated": False}
+
+
+def test_pl_lines_total_adds_up_when_odoo_returns_several_rows_per_account():
+    """Bewaakt dat het totaal wordt opgeteld en niet overschreven — anders zou het
+    doorklikscherm bij een fijnere groepering stilletjes één maand laten zien."""
+    class MultiRow(FakeLinesClient):
+        def read_group(self, model, domain, fields, groupby, lazy=True):
+            return [
+                {"account_id": [PL_ACCOUNT_IDS["430500"], "430500"], "balance": 200.0},
+                {"account_id": [PL_ACCOUNT_IDS["430500"], "430500"], "balance": 250.0},
+            ]
+
+    result = kpis.fetch_pl_lines(MultiRow(1), ["430500"], date(2026, 8, 1), date(2026, 9, 1))
+    assert result["total"] == 450.0
+    assert result["total_per_account"] == {"430500": 450.0}
