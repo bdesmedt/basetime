@@ -70,7 +70,39 @@ _SCHEMA_STATEMENTS = [
         payload  JSONB       NOT NULL
     )
     """,
+    # Betaalplan voor de kasprognose: per leverancier (of per andere groep) wanneer je
+    # betaalt. `key` is bv. "partner:6344". Zonder rij geldt de standaard: op vervaldatum.
+    """
+    CREATE TABLE IF NOT EXISTS cash_plan (
+        key        TEXT        PRIMARY KEY,
+        label      TEXT        NOT NULL DEFAULT '',
+        mode       TEXT        NOT NULL,
+        start_week INTEGER     NOT NULL DEFAULT 0,
+        spread     INTEGER     NOT NULL DEFAULT 1,
+        note       TEXT        NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    # Eigen regels in de prognose die niet uit Odoo komen: een financieringsronde, een
+    # toegezegde betaling, een verwachte uitgave.
+    """
+    CREATE TABLE IF NOT EXISTS cash_extra (
+        id         BIGSERIAL   PRIMARY KEY,
+        label      TEXT        NOT NULL,
+        amount     NUMERIC     NOT NULL,
+        on_date    DATE        NOT NULL,
+        note       TEXT        NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
 ]
+
+# Betaalwijzen voor cash_plan.mode:
+#   "due"    op vervaldatum (standaard)
+#   "week"   in één keer, in week `start_week`
+#   "spread" in `spread` gelijke delen, vanaf week `start_week`
+#   "defer"  buiten de horizon (betaal je niet binnen deze 13 weken)
+PLAN_MODES = ("due", "week", "spread", "defer")
 
 CUSTOM_PREFIX = "custom:"
 
@@ -311,3 +343,94 @@ def load_snapshots(days: int = 365, limit: int = 400) -> list[dict]:
     except Exception as exc:
         logger.warning("Kon de momentopnames niet lezen: %s", exc)
         return []
+
+
+# --- Betaalplan en eigen regels voor de kasprognose --------------------------
+
+def load_cash_plan() -> dict:
+    """Het betaalplan per leverancier. Geeft altijd iets bruikbaars terug; zonder
+    database een lege planning, wat neerkomt op "alles op vervaldatum"."""
+    if not config.DATABASE_URL:
+        return {"plan": {}, "extras": [], "storage": "geen", "error": None}
+    try:
+        def _read(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT key, label, mode, start_week, spread, note FROM cash_plan"
+                )
+                plan = {
+                    key: {"key": key, "label": label, "mode": mode,
+                          "start_week": start_week, "spread": spread, "note": note}
+                    for key, label, mode, start_week, spread, note in cur.fetchall()
+                }
+                cur.execute(
+                    "SELECT id, label, amount, on_date, note FROM cash_extra ORDER BY on_date"
+                )
+                extras = [
+                    {"id": rid, "label": label, "amount": float(amount),
+                     "date": on_date.isoformat(), "note": note}
+                    for rid, label, amount, on_date, note in cur.fetchall()
+                ]
+            return {"plan": plan, "extras": extras}
+        data = _with_conn(_read)
+        return {**data, "storage": "postgres", "error": None}
+    except Exception as exc:
+        logger.warning("Kon het betaalplan niet lezen: %s", exc)
+        return {"plan": {}, "extras": [], "storage": "geen", "error": str(exc)}
+
+
+def set_cash_plan(key: str, label: str, mode: str, start_week: int = 0,
+                  spread: int = 1, note: str = "") -> None:
+    if mode not in PLAN_MODES:
+        raise ValueError(f"Onbekende betaalwijze: {mode}")
+
+    def _write(conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO cash_plan (key, label, mode, start_week, spread, note, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (key) DO UPDATE SET
+                    label = EXCLUDED.label, mode = EXCLUDED.mode,
+                    start_week = EXCLUDED.start_week, spread = EXCLUDED.spread,
+                    note = EXCLUDED.note, updated_at = now()
+                """,
+                (key, label, mode, max(0, start_week), max(1, spread), note),
+            )
+    _with_conn(_write)
+
+
+def clear_cash_plan(key: str) -> None:
+    """Terug naar de standaard: betalen op vervaldatum."""
+    def _write(conn):
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM cash_plan WHERE key = %s", (key,))
+    _with_conn(_write)
+
+
+def reset_cash_plan() -> None:
+    def _write(conn):
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM cash_plan")
+            cur.execute("DELETE FROM cash_extra")
+    _with_conn(_write)
+
+
+def add_cash_extra(label: str, amount: float, on_date: str, note: str = "") -> dict:
+    def _write(conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO cash_extra (label, amount, on_date, note) "
+                "VALUES (%s, %s, %s, %s) RETURNING id",
+                (label, amount, on_date, note),
+            )
+            new_id = cur.fetchone()[0]
+        return {"id": new_id, "label": label, "amount": amount, "date": on_date, "note": note}
+    return _with_conn(_write)
+
+
+def delete_cash_extra(extra_id: int) -> None:
+    def _write(conn):
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM cash_extra WHERE id = %s", (extra_id,))
+    _with_conn(_write)

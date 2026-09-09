@@ -51,6 +51,7 @@ _detail_cache: dict[str, dict] = {}
 _inventory_cache: dict[str, dict] = {}
 _pl_cache: dict[str, dict] = {}
 _pl_lines_cache: dict[str, dict] = {}
+_cash_cache: dict[str, dict] = {}
 
 
 def _parse_period(months: int | None, date_from: str | None, date_to: str | None) -> dict:
@@ -337,6 +338,110 @@ def api_pl_reset(_auth: None = Depends(check_auth)):
     """Alles terug naar de indeling van het Odoo-rapport."""
     _storage_guard(db.reset)
     return _layout_changed()
+
+
+# --- Kasprognose -------------------------------------------------------------
+
+@app.get("/api/cash")
+def api_cash(
+    refresh: bool = Query(False),
+    weeks: int | None = Query(None, ge=2, le=52),
+    _auth: None = Depends(check_auth),
+):
+    """De rollende kasprognose. Eigen endpoint/cache; wordt pas opgehaald zodra de
+    gebruiker de Kas-tab voor het eerst opent."""
+    horizon = weeks or config.FORECAST_WEEKS
+    return _cached(
+        _cash_cache, f"weeks:{horizon}", refresh,
+        lambda: kpis.build_cash_forecast(weeks=horizon),
+    )
+
+
+def _cash_changed() -> dict:
+    """Na elke wijziging in het betaalplan moet de prognose opnieuw worden gerekend."""
+    _cash_cache.clear()
+    return {"ok": True, "plan": kpis.cash_plan_summary()}
+
+
+@app.post("/api/cash/plan")
+def api_cash_plan(payload: dict = Body(...), _auth: None = Depends(check_auth)):
+    """Zet de betaalafspraak voor één groep (meestal één leverancier). Een lege of
+    ontbrekende `mode` zet 'm terug op de standaard: betalen op vervaldatum."""
+    key = str(payload.get("key") or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Geef aan om welke groep het gaat.")
+    mode = str(payload.get("mode") or "").strip()
+    if not mode or mode == "due":
+        _storage_guard(lambda: db.clear_cash_plan(key))
+        return _cash_changed()
+    if mode not in db.PLAN_MODES:
+        raise HTTPException(status_code=400, detail=f"Onbekende betaalwijze: {mode}")
+    try:
+        start_week = int(payload.get("start_week") or 0)
+        spread = int(payload.get("spread") or 1)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Week en spreiding moeten getallen zijn.")
+    if not 0 <= start_week <= 52 or not 1 <= spread <= 52:
+        raise HTTPException(status_code=400, detail="Week en spreiding vallen buiten bereik.")
+    label = str(payload.get("label") or "")[:120]
+    note = str(payload.get("note") or "")[:300]
+    _storage_guard(
+        lambda: db.set_cash_plan(key, label, mode, start_week, spread, note)
+    )
+    return _cash_changed()
+
+
+@app.post("/api/cash/plan/apply-suggestions")
+def api_cash_apply_suggestions(_auth: None = Depends(check_auth)):
+    """Neemt het beredeneerde voorstel per leverancier in één keer over. Alles wat al
+    handmatig is ingesteld blijft staan — het voorstel wordt alleen aangeboden voor
+    groepen zonder eigen afspraak."""
+    forecast = kpis.build_cash_forecast()
+    applied = []
+    for suggestion in forecast.get("suggestions") or []:
+        _storage_guard(lambda s=suggestion: db.set_cash_plan(
+            s["key"], s["label"], s["mode"], s.get("start_week", 0),
+            s.get("spread", 1), s.get("reason", ""),
+        ))
+        applied.append(suggestion["key"])
+    return {**_cash_changed(), "applied": applied}
+
+
+@app.post("/api/cash/reset")
+def api_cash_reset(_auth: None = Depends(check_auth)):
+    """Alles terug naar 'op vervaldatum', inclusief de eigen regels."""
+    _storage_guard(db.reset_cash_plan)
+    return _cash_changed()
+
+
+@app.post("/api/cash/extra")
+def api_cash_extra(payload: dict = Body(...), _auth: None = Depends(check_auth)):
+    """Een eigen regel in de prognose: een financieringsronde, een toegezegde betaling,
+    een verwachte uitgave. Positief = ontvangst, negatief = uitgave."""
+    label = str(payload.get("label") or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="Geef de regel een naam.")
+    try:
+        amount = float(payload.get("amount"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Geef een bedrag op.")
+    if amount == 0:
+        raise HTTPException(status_code=400, detail="Een bedrag van nul verandert niets.")
+    on_date = str(payload.get("date") or "").strip()
+    try:
+        datetime.strptime(on_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Ongeldige datum: gebruik JJJJ-MM-DD.")
+    created = _storage_guard(lambda: db.add_cash_extra(
+        label[:120], amount, on_date, str(payload.get("note") or "")[:300]
+    ))
+    return {**_cash_changed(), "extra": created}
+
+
+@app.delete("/api/cash/extra/{extra_id}")
+def api_cash_extra_delete(extra_id: int, _auth: None = Depends(check_auth)):
+    _storage_guard(lambda: db.delete_cash_extra(extra_id))
+    return _cash_changed()
 
 
 @app.get("/", response_class=HTMLResponse)

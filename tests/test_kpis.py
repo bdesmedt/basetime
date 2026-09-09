@@ -1572,3 +1572,200 @@ def test_snapshot_series_returns_the_points_oldest_first(monkeypatch):
     assert series["first_date"] == "2026-09-02"
     assert series["last_date"] == "2026-09-09"
     assert series["count"] == 2
+
+
+# --- Kasprognose ------------------------------------------------------------
+
+TODAY = date.today()
+
+
+def _ar(due_offset, amount, partner="Klant", pid=1):
+    return {"key": f"ar:partner:{pid}", "partner": partner,
+            "due": _iso(TODAY + timedelta(days=due_offset)), "amount": amount,
+            "move_id": 1, "move_name": "F-1", "move_url": None, "no_due_date": False}
+
+
+def _ap(due_offset, amount, partner="Leverancier", pid=1):
+    return {"key": f"ap:partner:{pid}", "partner": partner,
+            "due": _iso(TODAY + timedelta(days=due_offset)), "amount": amount,
+            "move_id": 2, "move_name": "I-1", "move_url": None, "no_due_date": False}
+
+
+def _forecast(monkeypatch, *, bank=-100000.0, receivables=(), payables=(), backlog=(),
+              payroll=0.0, vat=0.0, plan=None, extras=(), weeks=13):
+    monkeypatch.setattr(kpis, "get_client", lambda: object())
+    monkeypatch.setattr(kpis, "fetch_bank_balance_now", lambda client: bank)
+    monkeypatch.setattr(kpis, "fetch_open_receivables", lambda client: list(receivables))
+    monkeypatch.setattr(kpis, "fetch_open_payables", lambda client: list(payables))
+    monkeypatch.setattr(kpis, "fetch_sales_backlog_to_invoice", lambda client: list(backlog))
+    monkeypatch.setattr(kpis, "estimate_monthly_payroll", lambda client: {
+        "per_month": payroll, "months": 3, "from": "2026-06-01", "to": "2026-08-31",
+        "accounts": ["400"]})
+    monkeypatch.setattr(kpis, "estimate_vat_due", lambda client: {
+        "amount": vat, "quarter_from": "2026-07-01", "quarter_to": "2026-09-30",
+        "pay_date": _iso(TODAY + timedelta(days=30)), "partial": True})
+    monkeypatch.setattr(kpis.db, "load_cash_plan", lambda: {
+        "plan": plan or {}, "extras": list(extras), "storage": "postgres", "error": None})
+    return kpis.build_cash_forecast(weeks=weeks)
+
+
+def _group(forecast, key):
+    return next(g for g in forecast["groups"] if g["key"] == key)
+
+
+def test_forecast_running_balance_follows_the_weekly_flows(monkeypatch):
+    forecast = _forecast(
+        monkeypatch, bank=-100000.0,
+        receivables=[_ar(-config.DEBTOR_DELAY_DAYS + 1, 10000.0)],   # deze week binnen
+        payables=[_ap(8, 4000.0)],                                   # week 1 eruit
+    )
+    assert forecast["rows"][0]["in"] == 10000.0
+    assert forecast["rows"][0]["balance"] == -90000.0
+    assert forecast["rows"][1]["out"] == 4000.0
+    assert forecast["rows"][1]["balance"] == -94000.0
+    # daarna gebeurt er niets meer, dus het saldo blijft staan
+    assert forecast["rows"][-1]["balance"] == -94000.0
+    assert forecast["end_balance"] == -94000.0
+
+
+def test_forecast_debtor_delay_moves_receipts_to_a_later_week(monkeypatch):
+    zonder = _forecast(monkeypatch, receivables=[_ar(0, 5000.0)])
+    # standaard betalen klanten DEBTOR_DELAY_DAYS te laat: 14 dagen = twee weken later
+    assert zonder["rows"][0]["in"] == 0.0
+    assert zonder["rows"][config.DEBTOR_DELAY_DAYS // 7]["in"] == 5000.0
+
+
+def test_forecast_puts_everything_overdue_in_the_first_week(monkeypatch):
+    forecast = _forecast(monkeypatch, payables=[_ap(-400, 20000.0), _ap(-3, 1000.0)])
+    assert forecast["rows"][0]["out"] == 21000.0
+    group = _group(forecast, "ap:partner:1")
+    assert group["overdue"] == 21000.0
+    assert group["oldest_days"] == 400
+
+
+def test_forecast_spread_mode_splits_the_group_over_the_horizon(monkeypatch):
+    plan = {"ap:partner:1": {"mode": "spread", "start_week": 0, "spread": 13}}
+    forecast = _forecast(monkeypatch, payables=[_ap(-400, 13000.0)], plan=plan)
+    assert [row["out"] for row in forecast["rows"]] == [1000.0] * 13
+    assert _group(forecast, "ap:partner:1")["in_horizon"] == 13000.0
+
+
+def test_forecast_week_mode_pays_the_whole_group_in_one_chosen_week(monkeypatch):
+    plan = {"ap:partner:1": {"mode": "week", "start_week": 5, "spread": 1}}
+    forecast = _forecast(monkeypatch, payables=[_ap(-400, 9000.0), _ap(2, 1000.0)], plan=plan)
+    assert forecast["rows"][5]["out"] == 10000.0
+    assert sum(row["out"] for row in forecast["rows"]) == 10000.0
+
+
+def test_forecast_defer_keeps_the_amount_out_of_the_horizon_but_reports_it(monkeypatch):
+    plan = {"ap:partner:1": {"mode": "defer", "start_week": 0, "spread": 1}}
+    forecast = _forecast(monkeypatch, bank=-100000.0,
+                         payables=[_ap(-400, 50000.0)], plan=plan)
+    assert sum(row["out"] for row in forecast["rows"]) == 0.0
+    assert forecast["end_balance"] == -100000.0
+    # het bedrag verdwijnt niet uit beeld: het staat als uitgesteld in de totalen
+    assert forecast["totals"]["deferred"] == 50000.0
+    assert forecast["totals"]["payables_overdue"] == 50000.0
+
+
+def test_forecast_flags_the_weeks_that_break_through_the_credit_limit(monkeypatch):
+    forecast = _forecast(monkeypatch, bank=-140000.0, payables=[_ap(8, 30000.0)])
+    assert forecast["rows"][0]["breach"] is False
+    assert forecast["rows"][1]["breach"] is True
+    assert forecast["first_breach"]["index"] == 1
+    assert forecast["breach_count"] == 12
+    assert forecast["lowest"]["balance"] == -170000.0
+    assert forecast["lowest"]["headroom"] == -20000.0
+
+
+def test_forecast_keeps_the_same_relation_apart_as_customer_and_supplier(monkeypatch):
+    """Faber Electronics is bij Basetime zowel klant als leverancier; die twee mogen niet
+    één betaalafspraak delen."""
+    forecast = _forecast(
+        monkeypatch,
+        receivables=[_ar(3, 2257.41, "Faber Electronics", 42)],
+        payables=[_ap(-30, 25310.90, "Faber Electronics", 42)],
+        plan={"ap:partner:42": {"mode": "defer", "start_week": 0, "spread": 1}},
+    )
+    assert _group(forecast, "ar:partner:42")["in_horizon"] == 2257.41
+    assert _group(forecast, "ap:partner:42")["in_horizon"] == 0.0
+
+
+def test_forecast_pays_payroll_once_a_month_on_the_pay_day(monkeypatch):
+    forecast = _forecast(monkeypatch, payroll=70000.0, weeks=13)
+    payroll = _group(forecast, "payroll")
+    # 13 weken beslaan drie of vier loonbetalingen, afhankelijk van de dag van de maand
+    assert 3 <= payroll["count"] <= 4
+    assert payroll["total"] == payroll["count"] * 70000.0
+    for item in payroll["items"]:
+        assert item["due"].endswith(f"-{config.PAYROLL_PAY_DAY:02d}")
+
+
+def test_forecast_includes_the_vat_payment_as_a_separate_line(monkeypatch):
+    forecast = _forecast(monkeypatch, vat=19120.0)
+    vat = _group(forecast, "vat")
+    assert vat["total"] == 19120.0
+    assert forecast["rows"][30 // 7]["out"] == 19120.0
+
+
+def test_forecast_extras_are_added_as_their_own_line(monkeypatch):
+    extras = [{"id": 7, "label": "Financiering aandeelhouder", "amount": 500000.0,
+               "date": _iso(TODAY + timedelta(days=21)), "note": ""}]
+    forecast = _forecast(monkeypatch, bank=-100000.0, extras=extras)
+    assert forecast["rows"][3]["in"] == 500000.0
+    assert forecast["end_balance"] == 400000.0
+    assert _group(forecast, "extra:7")["side"] == "in"
+
+
+def test_forecast_suggests_deferring_invoices_that_have_been_open_for_years(monkeypatch):
+    forecast = _forecast(monkeypatch, payables=[_ap(-900, 43893.16, "SODAQ", 9)])
+    suggestion = _group(forecast, "ap:partner:9")["suggestion"]
+    assert suggestion["mode"] == "defer"
+    assert "jaar" in suggestion["reason"]
+    # een voorstel is nog geen plan: zolang je het niet overneemt, staat het op vervaldatum
+    assert _group(forecast, "ap:partner:9")["mode"] == "due"
+    assert forecast["rows"][0]["out"] == 43893.16
+
+
+def test_forecast_suggests_spreading_a_large_recent_arrears(monkeypatch):
+    forecast = _forecast(monkeypatch, payables=[_ap(-100, 204441.0, "Faber", 5)])
+    suggestion = _group(forecast, "ap:partner:5")["suggestion"]
+    assert suggestion["mode"] == "spread"
+    assert suggestion["spread"] == config.FORECAST_WEEKS
+    assert "204.441" in suggestion["reason"]
+
+
+def test_forecast_does_not_suggest_anything_for_small_or_future_payables(monkeypatch):
+    forecast = _forecast(monkeypatch, payables=[_ap(-5, 500.0, "Klein", 3),
+                                                _ap(20, 90000.0, "Later", 4)])
+    assert forecast["suggestions"] == []
+
+
+def test_forecast_leaves_a_group_alone_once_you_have_set_it_yourself(monkeypatch):
+    plan = {"ap:partner:5": {"mode": "week", "start_week": 9, "spread": 1}}
+    forecast = _forecast(monkeypatch, payables=[_ap(-100, 204441.0, "Faber", 5)], plan=plan)
+    assert "suggestion" not in _group(forecast, "ap:partner:5")
+    assert forecast["rows"][9]["out"] == 204441.0
+
+
+def test_forecast_receipts_after_the_horizon_do_not_inflate_the_curve(monkeypatch):
+    forecast = _forecast(monkeypatch, receivables=[_ar(200, 80000.0)])
+    assert sum(row["in"] for row in forecast["rows"]) == 0.0
+    assert _group(forecast, "ar:partner:1")["outside_horizon"] == 80000.0
+    assert forecast["totals"]["receivables_open"] == 80000.0
+
+
+def test_forecast_without_a_database_still_produces_a_curve(monkeypatch):
+    monkeypatch.setattr(kpis.db, "load_cash_plan", lambda: {
+        "plan": {}, "extras": [], "storage": "geen", "error": None})
+    monkeypatch.setattr(kpis, "get_client", lambda: object())
+    monkeypatch.setattr(kpis, "fetch_bank_balance_now", lambda client: -133725.41)
+    monkeypatch.setattr(kpis, "fetch_open_receivables", lambda client: [])
+    monkeypatch.setattr(kpis, "fetch_open_payables", lambda client: [])
+    monkeypatch.setattr(kpis, "fetch_sales_backlog_to_invoice", lambda client: [])
+    monkeypatch.setattr(kpis, "estimate_monthly_payroll", lambda client: {"per_month": 0.0})
+    monkeypatch.setattr(kpis, "estimate_vat_due", lambda client: {"amount": 0.0})
+    forecast = kpis.build_cash_forecast()
+    assert forecast["storage"] == "geen"
+    assert len(forecast["rows"]) == config.FORECAST_WEEKS
+    assert forecast["headroom_now"] == round(-133725.41 - config.CREDIT_LIMIT, 2)

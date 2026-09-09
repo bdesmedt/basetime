@@ -271,6 +271,32 @@
     font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; padding: 6px 8px;
     border-radius: 6px; border: 1px solid var(--border); background: var(--page-plane); color: var(--text-primary); }
   .pl-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  /* --- Kasprognose --------------------------------------------------------- */
+  /* De naamkolom mag afbreken: de toelichting achter een leverancier is soms een hele zin,
+     en met nowrap (de standaard in pl-table) duwt die de betaalwijze-kolom uit beeld. */
+  .cash-name { white-space: normal; max-width: 300px; }
+  .cash-week-table tr.breach td { background: rgba(208,59,59,0.10); }
+  .cash-week-table tr.lowest td { font-weight: 700; color: var(--text-primary); }
+  .cash-week-table tbody tr { cursor: pointer; }
+  .cash-week-table tbody tr:hover td { background: var(--surface-2); }
+  .cash-num { font: inherit; font-size: 12px; width: 52px; padding: 3px 5px; border-radius: 5px;
+              border: 1px solid var(--border); background: var(--page-plane); color: var(--text-primary);
+              text-align: right; margin-left: 4px; }
+  .cash-ctrl { display: flex; align-items: center; gap: 4px; justify-content: flex-end; white-space: nowrap; }
+  .cash-ctrl label { font-size: 10.5px; color: var(--text-muted); }
+  .cash-suggest { background: rgba(42,120,214,0.10); border: 1px solid var(--series-1); border-radius: 8px;
+                  padding: 12px 16px; font-size: 12.5px; color: var(--text-primary); margin-bottom: 12px; }
+  .cash-suggest ul { margin: 7px 0 10px; padding-left: 18px; }
+  .cash-suggest li { margin-bottom: 3px; color: var(--text-secondary); }
+  .cash-why { font-size: 11px; color: var(--text-muted); display: block; margin-top: 2px; }
+  .cash-tag { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+              border-radius: 999px; padding: 0 6px; margin-left: 6px; white-space: nowrap; }
+  .cash-tag.planned { color: var(--series-1); border: 1px solid var(--series-1); }
+  .cash-tag.late { color: var(--status-critical); border: 1px solid var(--status-critical); }
+  .cash-addrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+  .cash-addrow input { font: inherit; font-size: 12.5px; padding: 5px 8px; border-radius: 6px;
+                       border: 1px solid var(--border); background: var(--page-plane); color: var(--text-primary); }
+  .cash-addrow .grow { flex: 1 1 200px; }
 </style>
 </head>
 <body>
@@ -294,6 +320,7 @@
   <nav class="tabs">
     <button class="tab-btn active" id="tab-btn-overview" onclick="switchTab('overview')">Overzicht</button>
     <button class="tab-btn" id="tab-btn-wv" onclick="switchTab('wv')">Winst &amp; verlies</button>
+    <button class="tab-btn" id="tab-btn-kas" onclick="switchTab('kas')">Kasprognose</button>
     <button class="tab-btn" id="tab-btn-voorraad" onclick="switchTab('voorraad')">Voorraad</button>
     <button class="tab-btn" id="tab-btn-actieplan" onclick="switchTab('actieplan')">Actieplan</button>
   </nav>
@@ -488,6 +515,136 @@
       </ul>
     </div>
   </div>
+
+  </div>
+
+  <div id="tab-kas" class="tab-panel" style="display:none">
+
+    <div class="tab-meta-row">
+      <span id="cash-last-updated" style="color:var(--text-muted);font-size:12.5px;"></span>
+      <button class="btn" onclick="loadCashData(true)">Vernieuwen</button>
+    </div>
+
+    <div class="banner error" id="cash-banner-error"></div>
+    <div class="banner warn" id="cash-banner-warn"></div>
+
+    <div class="heading-row">
+      <h2 class="section" style="margin-top:0;">Kasprognose</h2>
+    </div>
+    <p class="section-note" id="cash-source-note">Laden…</p>
+
+    <div class="tiles" id="cash-tiles"></div>
+
+    <div class="charts" style="margin-top:16px;">
+      <div class="chart-card">
+        <h3>Verwacht banksaldo per week</h3>
+        <p class="chart-sub" id="cash-chart-sub"></p>
+        <div class="legend">
+          <span class="key"><span class="swatch" style="background:var(--series-1)"></span>Saldo</span>
+          <span class="key"><span class="swatch" style="background:var(--status-critical)"></span>Kredietlimiet</span>
+        </div>
+        <svg id="chart-cash-balance" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+      <div class="chart-card">
+        <h3>In en uit per week</h3>
+        <p class="chart-sub">Ontvangsten boven de lijn, uitgaven eronder — inclusief btw.</p>
+        <div class="legend">
+          <span class="key"><span class="swatch" style="background:var(--series-3)"></span>Ontvangsten</span>
+          <span class="key"><span class="swatch" style="background:var(--series-2)"></span>Uitgaven</span>
+        </div>
+        <svg id="chart-cash-flows" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+    </div>
+
+    <h2 class="section">Week voor week</h2>
+    <p class="section-note">Klik op een week om te zien welke posten erin zitten.</p>
+    <div class="pl-panel">
+      <div class="pl-scroll">
+        <table class="pl-table cash-week-table" id="cash-week-table">
+          <thead><tr>
+            <th class="pl-l">Week</th><th>Ontvangsten</th><th>Uitgaven</th>
+            <th>Netto</th><th>Saldo eind week</th><th class="pl-r">Ruimte tot limiet</th>
+          </tr></thead>
+          <tbody id="cash-week-body"><tr><td class="pl-l"><span class="skeleton">Laden…</span></td></tr></tbody>
+        </table>
+      </div>
+      <div class="pl-foot" id="cash-week-foot"></div>
+    </div>
+
+    <h2 class="section">Betaalplan crediteuren</h2>
+    <p class="section-note">Wie betaal je wanneer? Dit is de knop waaraan je draait: de curve
+      hierboven verandert meteen mee. Zonder keuze staat een leverancier op de vervaldatum —
+      alles wat al vervallen is, valt dan in de eerste week.</p>
+    <div id="cash-suggest-box"></div>
+    <div class="pl-toolbar">
+      <span class="pl-chip" id="cash-plan-chip">Geen afspraken vastgelegd</span>
+      <span class="spacer"></span>
+      <button class="btn" onclick="resetCashPlan()">Alles terug naar vervaldatum</button>
+    </div>
+    <div class="pl-panel">
+      <div class="pl-scroll">
+        <table class="pl-table" id="cash-ap-table">
+          <thead><tr>
+            <th class="pl-l">Leverancier</th><th>Openstaand</th>
+            <th>Waarvan vervallen</th><th>Binnen horizon</th><th class="pl-r">Betaalwijze</th>
+          </tr></thead>
+          <tbody id="cash-ap-body"></tbody>
+        </table>
+      </div>
+      <div class="pl-foot" id="cash-ap-foot"></div>
+    </div>
+
+    <h2 class="section">Verwachte ontvangsten</h2>
+    <p class="section-note">Openstaande facturen en bevestigde orders die nog gefactureerd moeten
+      worden. Ook hier kun je per klant afwijken van de standaardaanname.</p>
+    <div class="pl-panel">
+      <div class="pl-scroll">
+        <table class="pl-table" id="cash-ar-table">
+          <thead><tr>
+            <th class="pl-l">Klant / order</th><th>Bedrag</th>
+            <th>Waarvan vervallen</th><th>Binnen horizon</th><th class="pl-r">Wanneer</th>
+          </tr></thead>
+          <tbody id="cash-ar-body"></tbody>
+        </table>
+      </div>
+      <div class="pl-foot" id="cash-ar-foot"></div>
+    </div>
+
+    <h2 class="section">Vaste posten en eigen regels</h2>
+    <p class="section-note">Loon en btw lopen niet via de crediteuren en zouden anders ontbreken.
+      Daaronder je eigen regels: een financieringsronde, een toezegging, een verwachte uitgave.</p>
+    <div class="pl-panel">
+      <div class="pl-scroll">
+        <table class="pl-table" id="cash-other-table">
+          <thead><tr>
+            <th class="pl-l">Post</th><th>Bedrag</th><th>Binnen horizon</th><th class="pl-r">Wanneer</th>
+          </tr></thead>
+          <tbody id="cash-other-body"></tbody>
+        </table>
+      </div>
+      <div class="pl-foot">
+        <div class="cash-addrow">
+          <div class="grow">
+            <label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:3px;">Omschrijving</label>
+            <input type="text" id="cash-extra-label" placeholder="bv. financiering aandeelhouders" style="width:100%">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:3px;">Bedrag (− voor uitgave)</label>
+            <input type="number" id="cash-extra-amount" step="0.01" placeholder="500000">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:3px;">Datum</label>
+            <input type="date" id="cash-extra-date">
+          </div>
+          <button class="btn" onclick="addCashExtra()">Regel toevoegen</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes" style="margin-top:20px;">
+      <b style="font-size:12.5px;">Waar dit op gebaseerd is</b>
+      <ul id="cash-assumptions"></ul>
+    </div>
 
   </div>
 
@@ -697,6 +854,19 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="cash-week-modal" onclick="if(event.target===this) closeCashWeek()">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <div>
+        <h3 id="cash-week-title">Week</h3>
+        <p id="cash-week-sub"></p>
+      </div>
+      <button class="modal-close" onclick="closeCashWeek()">Sluiten &#10005;</button>
+    </div>
+    <div class="modal-body" id="cash-week-modal-body"></div>
+  </div>
+</div>
+
 <div class="pl-pop" id="pl-pop"></div>
 
 <dialog class="pl-dialog" id="pl-rubriek-dialog">
@@ -754,7 +924,7 @@ function toggleTheme(){
 
 let inventoryLoaded = false;
 
-const TAB_NAMES = ['overview', 'wv', 'voorraad', 'actieplan'];
+const TAB_NAMES = ['overview', 'wv', 'kas', 'voorraad', 'actieplan'];
 
 function switchTab(name){
   TAB_NAMES.forEach(n => {
@@ -762,6 +932,10 @@ function switchTab(name){
     document.getElementById('tab-btn-' + n).classList.toggle('active', n === name);
   });
   if (name === 'wv' && !plLoaded) loadPlData(false);
+  // De periodekiezer hoort niet bij de kasprognose: die kijkt altijd vooruit vanaf vandaag.
+  // Hem laten staan suggereert dat je er iets mee kunt, en dat kan niet.
+  document.getElementById('period-bar').style.display = (name === 'kas') ? 'none' : 'flex';
+  if (name === 'kas' && !cashLoaded) loadCashData(false);
   if (name === 'voorraad' && !inventoryLoaded) loadInventoryData(false);
   if (name === 'actieplan' && !actieplanRendered) renderActieplan();
 }
@@ -2840,6 +3014,440 @@ async function loadPlData(forceRefresh){
     document.getElementById('pl-body').innerHTML =
       '<tr><td class="pl-l"><span class="skeleton">Geen gegevens</span></td></tr>';
   }
+}
+
+/* --- Kasprognose ----------------------------------------------------------
+   Eén tab die twee dingen tegelijk doet: laten zien wat er feitelijk vastligt aan in- en
+   uitgaande stromen, en laten uitproberen wat jouw betaalkeuzes met de kredietruimte doen.
+   Alle bedragen zijn inclusief btw — het gaat hier om wat er van de bank af gaat, niet om
+   het resultaat. */
+
+let cashData = null;
+let cashLoaded = false;
+let cashBusy = false;
+
+const CASH_MODES_OUT = [
+  ['due', 'Op vervaldatum'], ['week', 'In één week'],
+  ['spread', 'Gespreid'], ['defer', 'Buiten de horizon'],
+];
+const CASH_MODES_IN = [
+  ['due', 'Zoals verwacht'], ['week', 'In één week'],
+  ['spread', 'Gespreid'], ['defer', 'Niet binnen de horizon'],
+];
+
+function cashBanner(kind, text){
+  const el = document.getElementById('cash-banner-' + kind);
+  el.textContent = text;
+  el.style.display = text ? 'block' : 'none';
+}
+
+async function loadCashData(forceRefresh){
+  try {
+    const resp = await fetch('/api/cash' + (forceRefresh ? '?refresh=true' : ''));
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    cashData = await resp.json();
+    cashLoaded = true;
+    cashBanner('error', '');
+    const warnings = [];
+    if (cashData.stale_error) warnings.push('Odoo gaf een fout; hieronder staan de laatst bekende cijfers.');
+    if (cashData.storage !== 'postgres'){
+      warnings.push('Er is nog geen database gekoppeld, dus betaalafspraken worden niet bewaard. ' +
+        'De prognose zelf werkt wel: alles staat dan op de vervaldatum.');
+    }
+    if (cashData.storage_error) warnings.push('Het betaalplan kon niet worden gelezen: ' + cashData.storage_error);
+    cashBanner('warn', warnings.join(' '));
+    document.getElementById('cash-last-updated').textContent =
+      'Bijgewerkt: ' + new Date().toLocaleString('nl-NL');
+    renderCash();
+  } catch (err) {
+    cashBanner('error', 'Kon de kasprognose niet laden: ' + err.message);
+    document.getElementById('cash-week-body').innerHTML =
+      '<tr><td class="pl-l"><span class="skeleton">Geen gegevens</span></td></tr>';
+  }
+}
+
+function renderCash(){
+  if (!cashData) return;
+  const d = cashData;
+  document.getElementById('cash-source-note').textContent =
+    d.weeks + ' weken vooruit vanaf ' + fmtDateNL(d.as_of) + '. Openstaande facturen komen ' +
+    'rechtstreeks uit Odoo; loon, btw en de nog te factureren orders zijn erbij geschat omdat ' +
+    'die anders zouden ontbreken.';
+
+  renderCashTiles();
+  drawCashBalance('chart-cash-balance', d.rows, d.credit_limit, d.start_balance);
+  drawCashFlows('chart-cash-flows', d.rows);
+  document.getElementById('cash-chart-sub').textContent =
+    'Vanaf € ' + fmtEURK(d.start_balance) + ' nu; limiet € ' + fmtEURK(d.credit_limit) + '.';
+  renderCashWeeks();
+  renderCashSuggestions();
+  renderCashGroups();
+  renderCashAssumptions();
+}
+
+function renderCashTiles(){
+  const d = cashData;
+  const low = d.lowest || {};
+  const tiles = [
+    { label: 'Banksaldo nu', value: fmtEUR0.format(d.start_balance),
+      sub: 'ruimte tot de limiet: ' + fmtEUR0.format(d.headroom_now) },
+    { label: 'Laagste stand in de horizon', value: fmtEUR0.format(low.balance || 0),
+      sub: low.start ? 'week ' + (low.index + 1) + ', vanaf ' + fmtDateNL(low.start) : '',
+      flag: (low.balance < d.credit_limit) ? 'crit' : (low.headroom < 25000 ? 'warn' : 'ok'),
+      flagText: (low.balance < d.credit_limit) ? 'over de limiet'
+                : (low.headroom < 25000 ? 'krap' : 'binnen limiet'),
+      delta: 'ruimte ' + fmtEUR0.format(low.headroom || 0),
+      deltaClass: (low.headroom || 0) < 0 ? 'bad' : 'good' },
+    { label: 'Stand na ' + d.weeks + ' weken', value: fmtEUR0.format(d.end_balance),
+      sub: 'ontvangen ' + fmtEUR0.format(d.totals.in) + ', betaald ' + fmtEUR0.format(d.totals.out) },
+    { label: 'Achterstand crediteuren', value: fmtEUR0.format(d.totals.payables_overdue),
+      sub: d.totals.deferred > 0
+        ? fmtEUR0.format(d.totals.deferred) + ' daarvan staat buiten deze horizon gepland'
+        : 'volledig binnen deze horizon ingepland',
+      flag: d.totals.payables_overdue > 0 ? 'gap' : 'ok',
+      flagText: d.totals.payables_overdue > 0 ? 'vervallen' : 'bij' },
+  ];
+  document.getElementById('cash-tiles').innerHTML = tiles.map(t =>
+    '<div class="tile">' +
+      (t.flag ? '<span class="flag ' + t.flag + '">' + t.flagText + '</span>' : '') +
+      '<p class="label">' + t.label + '</p>' +
+      '<div class="value">' + t.value + '</div>' +
+      (t.delta ? '<div class="delta ' + (t.deltaClass || '') + '">' + t.delta + '</div>' : '') +
+      (t.sub ? '<div class="sub">' + t.sub + '</div>' : '') +
+    '</div>').join('');
+}
+
+/* Eigen grafiek in plaats van drawLine(): die schaalt met min*0,9 en dat werkt niet bij
+   negatieve saldi. Bovendien hoort de kredietlimiet er als vaste lijn in — zonder die
+   lijn zegt de curve niets. */
+function drawCashBalance(svgId, rows, limit, startBalance){
+  const svg = document.getElementById(svgId);
+  const W = 520, H = 220, ML = 8, MR = 8, MT = 14, MB = 28;
+  const plotW = W - ML - MR, plotH = H - MT - MB;
+  const labels = ['nu'].concat(rows.map(r => r.label));
+  const series = [startBalance].concat(rows.map(r => r.balance));
+  let minV = Math.min.apply(null, series.concat([limit, 0]));
+  let maxV = Math.max.apply(null, series.concat([limit, 0]));
+  const pad = (maxV - minV) * 0.12 || 1000;
+  minV -= pad; maxV += pad;
+  const range = maxV - minV || 1;
+  const yOf = v => MT + plotH - (v - minV) / range * plotH;
+  const stepX = plotW / Math.max(labels.length - 1, 1);
+  let s = '<g>';
+  for (let g = 0; g <= 4; g++){
+    const val = minV + g * range / 4, y = yOf(val);
+    s += '<line class="gridline" x1="' + ML + '" x2="' + (W - MR) + '" y1="' + y + '" y2="' + y + '"/>';
+    s += '<text class="axis-label" x="' + ML + '" y="' + (y - 3) + '">€' + fmtEURK(val) + '</text>';
+  }
+  const yZero = yOf(0);
+  s += '<line class="baseline" x1="' + ML + '" x2="' + (W - MR) + '" y1="' + yZero + '" y2="' + yZero + '"/>';
+  const yLimit = yOf(limit);
+  s += '<line x1="' + ML + '" x2="' + (W - MR) + '" y1="' + yLimit + '" y2="' + yLimit +
+       '" stroke="' + css('--status-critical') + '" stroke-width="1.5" stroke-dasharray="5 4"/>';
+  s += '<text class="axis-label" x="' + (W - MR) + '" y="' + (yLimit - 4) + '" text-anchor="end" fill="' +
+       css('--status-critical') + '">kredietlimiet</text>';
+
+  const pts = series.map((v, i) => [ML + i * stepX, yOf(v)]);
+  s += '<path d="' + pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ') +
+       '" fill="none" stroke="' + css('--series-1') + '" stroke-width="2" stroke-linejoin="round"/>';
+  pts.forEach((p, i) => {
+    const under = series[i] < limit;
+    const fill = under ? css('--status-critical') : css('--series-1');
+    s += '<circle data-tip="' + labels[i] + '||' + fmtEUR0.format(series[i]) + '" cx="' + p[0] +
+         '" cy="' + p[1] + '" r="4" fill="' + fill + '" stroke="' + css('--surface-1') + '" stroke-width="2"/>';
+    if (i % 2 === 0){
+      s += '<text class="axis-label" x="' + p[0] + '" y="' + (H - 8) + '" text-anchor="middle">' +
+           labels[i] + '</text>';
+    }
+  });
+  s += '</g>';
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
+function drawCashFlows(svgId, rows){
+  const svg = document.getElementById(svgId);
+  const W = 520, H = 220, ML = 8, MR = 8, MT = 14, MB = 28;
+  const plotW = W - ML - MR, plotH = H - MT - MB;
+  const maxV = Math.max.apply(null, rows.map(r => Math.max(r['in'], r.out)).concat([1]));
+  const half = plotH / 2, yZero = MT + half;
+  const slot = plotW / Math.max(rows.length, 1);
+  const bw = Math.min(11, slot * 0.34);
+  let s = '<g>';
+  for (let g = -2; g <= 2; g++){
+    const y = yZero - g * half / 2;
+    s += '<line class="gridline" x1="' + ML + '" x2="' + (W - MR) + '" y1="' + y + '" y2="' + y + '"/>';
+    if (g !== 0){
+      s += '<text class="axis-label" x="' + ML + '" y="' + (y - 3) + '">€' +
+           fmtEURK(Math.abs(g) * maxV / 2) + '</text>';
+    }
+  }
+  s += '<line class="baseline" x1="' + ML + '" x2="' + (W - MR) + '" y1="' + yZero + '" y2="' + yZero + '"/>';
+  rows.forEach((r, i) => {
+    const cx = ML + slot * i + slot / 2;
+    const hIn = r['in'] / maxV * half, hOut = r.out / maxV * half;
+    s += '<rect data-tip="' + r.label + '|Ontvangsten|' + fmtEUR0.format(r['in']) + '" x="' + (cx - bw - 1) +
+         '" y="' + (yZero - hIn) + '" width="' + bw + '" height="' + Math.max(hIn, 0.5) +
+         '" rx="2" fill="' + css('--series-3') + '"/>';
+    s += '<rect data-tip="' + r.label + '|Uitgaven|' + fmtEUR0.format(r.out) + '" x="' + (cx + 1) +
+         '" y="' + yZero + '" width="' + bw + '" height="' + Math.max(hOut, 0.5) +
+         '" rx="2" fill="' + css('--series-2') + '"/>';
+    if (i % 2 === 0){
+      s += '<text class="axis-label" x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle">' +
+           r.label + '</text>';
+    }
+  });
+  s += '</g>';
+  svg.innerHTML = s;
+  attachTooltips(svg);
+}
+
+function renderCashWeeks(){
+  const d = cashData;
+  const lowIndex = d.lowest ? d.lowest.index : -1;
+  document.getElementById('cash-week-body').innerHTML = d.rows.map(r => {
+    const cls = [r.breach ? 'breach' : '', r.index === lowIndex ? 'lowest' : ''].join(' ').trim();
+    return '<tr class="' + cls + '" onclick="openCashWeek(' + r.index + ')">' +
+      '<td class="pl-l">week ' + (r.index + 1) + ' <span class="pl-code">' +
+        fmtDateNL(r.start) + ' – ' + fmtDateNL(r.end) + '</span></td>' +
+      '<td>' + (r['in'] ? fmtEUR0.format(r['in']) : '–') + '</td>' +
+      '<td>' + (r.out ? fmtEUR0.format(r.out) : '–') + '</td>' +
+      '<td class="' + (r.net >= 0 ? 'pl-up' : 'pl-down') + '">' + fmtEUR0.format(r.net) + '</td>' +
+      '<td>' + fmtEUR0.format(r.balance) + '</td>' +
+      '<td class="pl-r ' + (r.headroom < 0 ? 'pl-down' : '') + '">' + fmtEUR0.format(r.headroom) + '</td>' +
+    '</tr>';
+  }).join('');
+  const foot = d.breach_count
+    ? 'In ' + d.breach_count + ' van de ' + d.weeks + ' weken komt het saldo onder de kredietlimiet — ' +
+      'voor het eerst in week ' + (d.first_breach.index + 1) + ' (vanaf ' + fmtDateNL(d.first_breach.start) + ').'
+    : 'Het saldo blijft in alle ' + d.weeks + ' weken binnen de kredietlimiet.';
+  document.getElementById('cash-week-foot').textContent = foot;
+}
+
+function cashModeCell(group){
+  const modes = group.side === 'in' ? CASH_MODES_IN : CASH_MODES_OUT;
+  const k = plEsc(group.key);
+  let s = '<div class="cash-ctrl">';
+  s += '<select class="pl-select" id="cm-' + k + '" onchange="saveCashRow(\'' + k + '\')">' +
+       modes.map(m => '<option value="' + m[0] + '"' + (group.mode === m[0] ? ' selected' : '') + '>' +
+                      m[1] + '</option>').join('') + '</select>';
+  if (group.mode === 'week' || group.mode === 'spread'){
+    s += '<label>' + (group.mode === 'spread' ? 'vanaf wk' : 'wk') + '</label>' +
+         '<input class="cash-num" type="number" min="1" max="' + cashData.weeks + '" value="' +
+         (group.start_week + 1) + '" id="cw-' + k + '" onchange="saveCashRow(\'' + k + '\')">';
+  }
+  if (group.mode === 'spread'){
+    s += '<label>in</label><input class="cash-num" type="number" min="1" max="' + cashData.weeks +
+         '" value="' + group.spread + '" id="cs-' + k + '" onchange="saveCashRow(\'' + k + '\')">' +
+         '<label>×</label>';
+  }
+  s += '</div>';
+  return s;
+}
+
+function cashGroupLabel(group, extra){
+  // De begrenzing staat op een div: max-width op een <td> wordt door de tabelopmaak
+  // genegeerd, en zonder begrenzing duwt een lange toelichting de betaalwijze uit beeld.
+  let s = '<div class="cash-name"><span class="pl-name">' + plEsc(group.label) + '</span>';
+  if (group.planned) s += '<span class="cash-tag planned">eigen afspraak</span>';
+  if (group.overdue > 0) s += '<span class="cash-tag late">vervallen</span>';
+  const meta = [];
+  if (group.count > 1) meta.push(group.count + ' posten');
+  if (group.oldest_days !== null && group.oldest_days !== undefined && group.overdue > 0){
+    meta.push('oudste ' + group.oldest_days + ' dagen');
+  }
+  if (extra) meta.push(extra);
+  const why = group.suggestion ? group.suggestion.reason : (group.note || '');
+  if (meta.length) s += '<span class="cash-why">' + plEsc(meta.join(' · ')) + '</span>';
+  if (why) s += '<span class="cash-why">' + plEsc(why) + '</span>';
+  return s + '</div>';
+}
+
+function renderCashGroups(){
+  const d = cashData;
+  const ap = d.groups.filter(g => g.category === 'crediteuren');
+  document.getElementById('cash-ap-body').innerHTML = ap.length ? ap.map(g =>
+    '<tr>' +
+      '<td class="pl-l">' + cashGroupLabel(g) + '</td>' +
+      '<td>' + fmtEUR0.format(g.total) + '</td>' +
+      '<td class="' + (g.overdue > 0 ? 'pl-down' : '') + '">' + (g.overdue ? fmtEUR0.format(g.overdue) : '–') + '</td>' +
+      '<td>' + fmtEUR0.format(g.in_horizon) + '</td>' +
+      '<td class="pl-r">' + cashModeCell(g) + '</td>' +
+    '</tr>').join('') : '<tr><td class="pl-l">Geen openstaande crediteuren.</td></tr>';
+  const apTotal = ap.reduce((sum, g) => sum + g.total, 0);
+  const apHorizon = ap.reduce((sum, g) => sum + g.in_horizon, 0);
+  document.getElementById('cash-ap-foot').textContent =
+    ap.length + ' leveranciers, samen ' + fmtEUR0.format(apTotal) + ' openstaand, waarvan ' +
+    fmtEUR0.format(d.totals.payables_overdue) + ' vervallen. Binnen deze horizon staat ' +
+    fmtEUR0.format(apHorizon) + ' ingepland.';
+
+  const ar = d.groups.filter(g => g.category === 'debiteuren' || g.category === 'orders');
+  document.getElementById('cash-ar-body').innerHTML = ar.length ? ar.map(g =>
+    '<tr>' +
+      '<td class="pl-l">' + cashGroupLabel(g, g.category === 'orders' ? 'nog te factureren' : '') + '</td>' +
+      '<td>' + fmtEUR0.format(g.total) + '</td>' +
+      '<td class="' + (g.overdue > 0 ? 'pl-down' : '') + '">' + (g.overdue ? fmtEUR0.format(g.overdue) : '–') + '</td>' +
+      '<td>' + fmtEUR0.format(g.in_horizon) + '</td>' +
+      '<td class="pl-r">' + cashModeCell(g) + '</td>' +
+    '</tr>').join('') : '<tr><td class="pl-l">Geen openstaande facturen of orders.</td></tr>';
+  const arTotal = ar.reduce((sum, g) => sum + g.total, 0);
+  const arHorizon = ar.reduce((sum, g) => sum + g.in_horizon, 0);
+  document.getElementById('cash-ar-foot').textContent =
+    fmtEUR0.format(arTotal) + ' aan verwachte ontvangsten, waarvan ' + fmtEUR0.format(arHorizon) +
+    ' binnen deze horizon. Standaard betalen klanten ' + d.assumptions.debtor_delay_days +
+    ' dagen ná de vervaldatum; nog te factureren orders komen ' + d.assumptions.backlog_delay_days +
+    ' dagen na de orderdatum binnen.';
+
+  const other = d.groups.filter(g => ['loon', 'btw', 'overig'].indexOf(g.category) >= 0);
+  document.getElementById('cash-other-body').innerHTML = other.length ? other.map(g => {
+    const when = g.category === 'overig'
+      ? fmtDateNL(g.items[0].due) +
+        ' <button class="pl-movebtn" onclick="deleteCashExtra(' + g.extra_id + ')">verwijderen</button>'
+      : cashModeCell(g);
+    return '<tr>' +
+      '<td class="pl-l">' + cashGroupLabel(g) + '</td>' +
+      '<td class="' + (g.side === 'in' ? 'pl-up' : '') + '">' +
+        (g.side === 'in' ? '+' : '−') + fmtEUR0.format(Math.abs(g.total)) + '</td>' +
+      '<td>' + fmtEUR0.format(Math.abs(g.in_horizon)) + '</td>' +
+      '<td class="pl-r">' + when + '</td>' +
+    '</tr>';
+  }).join('') : '<tr><td class="pl-l">Nog geen vaste posten of eigen regels.</td></tr>';
+
+  const chip = document.getElementById('cash-plan-chip');
+  chip.textContent = d.plan_count
+    ? d.plan_count + ' eigen betaalafspraak' + (d.plan_count === 1 ? '' : 'en')
+    : 'Geen afspraken vastgelegd — alles op vervaldatum';
+  chip.classList.toggle('on', d.plan_count > 0);
+}
+
+function renderCashSuggestions(){
+  const box = document.getElementById('cash-suggest-box');
+  const list = cashData.suggestions || [];
+  if (!list.length){ box.innerHTML = ''; return; }
+  box.innerHTML = '<div class="cash-suggest"><b>Voorstel om mee te beginnen</b>' +
+    '<ul>' + list.map(s => '<li><b>' + plEsc(s.label) + '</b> — ' + plEsc(s.reason) + '</li>').join('') + '</ul>' +
+    '<button class="btn" onclick="applyCashSuggestions()">Voorstel overnemen</button>' +
+    '<span style="font-size:11.5px;color:var(--text-muted);margin-left:8px;">' +
+    'Daarna per leverancier bij te stellen. Wat je zelf al hebt ingesteld, blijft staan.</span></div>';
+}
+
+function renderCashAssumptions(){
+  const a = cashData.assumptions;
+  const items = [
+    '<b>Openstaande facturen</b> komen rechtstreeks uit Odoo, op restbedrag. Klanten betalen ' +
+      'in de prognose ' + a.debtor_delay_days + ' dagen ná de vervaldatum.',
+    '<b>Loon</b> is ' + fmtEUR0.format((a.payroll && a.payroll.per_month) || 0) + ' per maand, het ' +
+      'gemiddelde over ' + ((a.payroll && a.payroll.months) || 0) + ' maanden op de rekeningen ' +
+      ((a.payroll && a.payroll.accounts) || []).join(', ') + '. Salarissen lopen niet als factuur ' +
+      'door Odoo en zouden anders ontbreken. De managementvergoedingen zitten hier bewust niet bij: ' +
+      'die worden gefactureerd en staan al bij de crediteuren.',
+    '<b>Btw</b> over het lopende kwartaal: ' + fmtEUR0.format((a.vat && a.vat.amount) || 0) +
+      (a.vat && a.vat.partial ? ' — het kwartaal loopt nog, dus dit bedrag loopt nog op' : '') +
+      ', te betalen op ' + fmtDateNL(a.vat && a.vat.pay_date) + '.',
+    '<b>Nog te factureren orders</b>: bevestigde verkooporders van na de afgelopen ' +
+      a.backlog_max_age_months + ' maanden met meer dan ' + fmtEUR0.format(a.backlog_min_amount) +
+      ' open, inclusief btw, ' + a.backlog_delay_days + ' dagen na de orderdatum. Oude restjes ' +
+      'van een paar tientjes blijven eruit — die worden nooit meer gefactureerd.',
+    '<b>Wat er niet in zit</b>: nieuwe orders die nog binnen moeten komen, en inkopen waarvoor ' +
+      'nog geen factuur is. De prognose is dus geen voorspelling maar een ondergrens van wat vastligt.',
+  ];
+  document.getElementById('cash-assumptions').innerHTML = items.map(i => '<li>' + i + '</li>').join('');
+}
+
+/* --- Opslaan --------------------------------------------------------------- */
+
+async function cashSave(fn){
+  if (cashBusy) return;
+  cashBusy = true;
+  try {
+    cashBanner('error', '');
+    await fn();
+    await loadCashData(false);
+  } catch (err) {
+    cashBanner('error', err.message);
+  } finally {
+    cashBusy = false;
+  }
+}
+
+function saveCashRow(key){
+  const mode = document.getElementById('cm-' + key).value;
+  const weekEl = document.getElementById('cw-' + key);
+  const spreadEl = document.getElementById('cs-' + key);
+  const group = cashData.groups.find(g => g.key === key) || {};
+  // in het scherm tellen de weken vanaf 1, in de API vanaf 0
+  const startWeek = weekEl ? Math.max(0, parseInt(weekEl.value, 10) - 1) : group.start_week || 0;
+  const spread = spreadEl ? Math.max(1, parseInt(spreadEl.value, 10)) : (group.spread || 1);
+  cashSave(() => plPost('/api/cash/plan', {
+    key: key, label: group.label || '', mode: mode,
+    start_week: isNaN(startWeek) ? 0 : startWeek, spread: isNaN(spread) ? 1 : spread,
+  }));
+}
+
+function applyCashSuggestions(){
+  cashSave(() => plPost('/api/cash/plan/apply-suggestions'));
+}
+
+function resetCashPlan(){
+  if (!confirm('Alle betaalafspraken en eigen regels wissen? Daarna staat alles weer op de vervaldatum.')) return;
+  cashSave(() => plPost('/api/cash/reset'));
+}
+
+function addCashExtra(){
+  const label = document.getElementById('cash-extra-label').value.trim();
+  const amount = parseFloat(document.getElementById('cash-extra-amount').value);
+  const when = document.getElementById('cash-extra-date').value;
+  if (!label || !amount || !when){
+    cashBanner('error', 'Vul een omschrijving, een bedrag en een datum in.');
+    return;
+  }
+  cashSave(async () => {
+    await plPost('/api/cash/extra', { label: label, amount: amount, date: when });
+    document.getElementById('cash-extra-label').value = '';
+    document.getElementById('cash-extra-amount').value = '';
+    document.getElementById('cash-extra-date').value = '';
+  });
+}
+
+function deleteCashExtra(id){
+  cashSave(() => plPost('/api/cash/extra/' + id, null, 'DELETE'));
+}
+
+/* --- Wat zit er in deze week? ---------------------------------------------- */
+
+function openCashWeek(index){
+  const row = cashData.rows[index];
+  if (!row) return;
+  const inRows = [], outRows = [];
+  cashData.groups.forEach(g => {
+    const amount = g.per_week[index] || g.per_week[String(index)];
+    if (!amount) return;
+    (g.side === 'in' ? inRows : outRows).push({ label: g.label, amount: amount, category: g.category });
+  });
+  inRows.sort((a, b) => b.amount - a.amount);
+  outRows.sort((a, b) => b.amount - a.amount);
+  const table = (title, rows, total) => rows.length
+    ? '<h4 style="font-size:12.5px;margin:14px 0 4px;">' + title + '</h4>' +
+      '<table class="data-table"><tbody>' + rows.map(r =>
+        '<tr><td class="name">' + plEsc(r.label) +
+        ' <span class="pl-code">' + r.category + '</span></td><td>' +
+        fmtEUR0.format(r.amount) + '</td></tr>').join('') +
+      '<tr><td class="name"><b>Totaal</b></td><td><b>' + fmtEUR0.format(total) + '</b></td></tr>' +
+      '</tbody></table>'
+    : '';
+  document.getElementById('cash-week-title').textContent =
+    'Week ' + (index + 1) + ': ' + fmtDateNL(row.start) + ' – ' + fmtDateNL(row.end);
+  document.getElementById('cash-week-sub').textContent =
+    'Saldo aan het eind van de week ' + fmtEUR0.format(row.balance) + ', ruimte tot de limiet ' +
+    fmtEUR0.format(row.headroom) + '.';
+  document.getElementById('cash-week-modal-body').innerHTML =
+    (table('Ontvangsten', inRows, row['in']) + table('Uitgaven', outRows, row.out)) ||
+    '<div class="modal-state">In deze week staat niets ingepland.</div>';
+  document.getElementById('cash-week-modal').classList.add('open');
+}
+
+function closeCashWeek(){
+  document.getElementById('cash-week-modal').classList.remove('open');
 }
 
 syncPeriodControls();

@@ -612,3 +612,112 @@ def test_capture_skips_when_todays_measurement_already_exists(monkeypatch):
     monkeypatch.setattr(main.snapshot.kpis, "build_dashboard_payload",
                         lambda **kw: pytest.fail("Odoo hoort niet bevraagd te worden"))
     assert main.snapshot.capture() is None
+
+
+# --- Kasprognose -------------------------------------------------------------
+
+FAKE_FORECAST = {
+    "as_of": "2026-09-09", "weeks": 13, "rows": [], "groups": [],
+    "start_balance": -133725.41, "credit_limit": -150000.0, "headroom_now": 16274.59,
+    "suggestions": [{"key": "ap:partner:5", "label": "Faber", "mode": "spread",
+                     "start_week": 0, "spread": 13, "overdue": 204441.0,
+                     "reason": "te groot voor één week"}],
+    "storage": "postgres",
+}
+
+
+@pytest.fixture(autouse=True)
+def _clear_cash_cache():
+    main._cash_cache.clear()
+    yield
+    main._cash_cache.clear()
+
+
+def test_api_cash_requires_authentication():
+    client = TestClient(main.app)
+    assert client.get("/api/cash").status_code == 401
+
+
+def test_api_cash_returns_the_forecast(monkeypatch):
+    monkeypatch.setattr(main.kpis, "build_cash_forecast", lambda weeks: FAKE_FORECAST)
+    client = TestClient(main.app)
+    resp = client.get("/api/cash", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 200
+    assert resp.json()["start_balance"] == -133725.41
+
+
+def test_changing_the_payment_plan_empties_the_forecast_cache(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main.kpis, "build_cash_forecast",
+                        lambda weeks: {**FAKE_FORECAST, "call": len(calls) or calls.append(1)})
+    monkeypatch.setattr(main.db, "set_cash_plan",
+                        lambda *args, **kwargs: calls.append(("set", args)))
+    monkeypatch.setattr(main.kpis, "cash_plan_summary", lambda: {"storage": "postgres"})
+
+    client = TestClient(main.app)
+    headers = _auth_header("testuser", "testpass")
+    client.get("/api/cash", headers=headers)
+    assert main._cash_cache
+    resp = client.post("/api/cash/plan", headers=headers, json={
+        "key": "ap:partner:5", "label": "Faber", "mode": "spread", "spread": 13})
+    assert resp.status_code == 200
+    assert main._cash_cache == {}
+
+
+def test_setting_a_group_back_to_the_due_date_removes_the_plan_row(monkeypatch):
+    cleared = []
+    monkeypatch.setattr(main.db, "clear_cash_plan", lambda key: cleared.append(key))
+    monkeypatch.setattr(main.kpis, "cash_plan_summary", lambda: {"storage": "postgres"})
+    client = TestClient(main.app)
+    resp = client.post("/api/cash/plan", headers=_auth_header("testuser", "testpass"),
+                       json={"key": "ap:partner:5", "mode": "due"})
+    assert resp.status_code == 200
+    assert cleared == ["ap:partner:5"]
+
+
+def test_an_unknown_payment_mode_is_refused():
+    client = TestClient(main.app)
+    resp = client.post("/api/cash/plan", headers=_auth_header("testuser", "testpass"),
+                       json={"key": "ap:partner:5", "mode": "ooit"})
+    assert resp.status_code == 400
+    assert "betaalwijze" in resp.json()["detail"]
+
+
+def test_applying_the_suggestions_writes_one_row_per_proposal(monkeypatch):
+    written = []
+    monkeypatch.setattr(main.kpis, "build_cash_forecast", lambda weeks=None: FAKE_FORECAST)
+    monkeypatch.setattr(main.db, "set_cash_plan",
+                        lambda key, label, mode, start_week, spread, note:
+                        written.append((key, mode, spread)))
+    monkeypatch.setattr(main.kpis, "cash_plan_summary", lambda: {"storage": "postgres"})
+    client = TestClient(main.app)
+    resp = client.post("/api/cash/plan/apply-suggestions",
+                       headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 200
+    assert written == [("ap:partner:5", "spread", 13)]
+    assert resp.json()["applied"] == ["ap:partner:5"]
+
+
+def test_an_extra_line_needs_a_name_an_amount_and_a_date():
+    client = TestClient(main.app)
+    headers = _auth_header("testuser", "testpass")
+    assert client.post("/api/cash/extra", headers=headers,
+                       json={"label": "", "amount": 100, "date": "2026-10-01"}
+                       ).status_code == 400
+    assert client.post("/api/cash/extra", headers=headers,
+                       json={"label": "Lening", "amount": 0, "date": "2026-10-01"}
+                       ).status_code == 400
+    assert client.post("/api/cash/extra", headers=headers,
+                       json={"label": "Lening", "amount": 100, "date": "1 oktober"}
+                       ).status_code == 400
+
+
+def test_adding_an_extra_line_without_a_database_gives_a_clear_message(monkeypatch):
+    def boom(*args, **kwargs):
+        raise main.db.StorageUnavailable("Er is geen DATABASE_URL ingesteld.")
+    monkeypatch.setattr(main.db, "add_cash_extra", boom)
+    client = TestClient(main.app)
+    resp = client.post("/api/cash/extra", headers=_auth_header("testuser", "testpass"),
+                       json={"label": "Financiering", "amount": 500000, "date": "2026-11-01"})
+    assert resp.status_code == 503
+    assert "DATABASE_URL" in resp.json()["detail"]

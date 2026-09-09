@@ -6,10 +6,11 @@ intake, recurring/subscription-omzet, brutomarge, inkoopbacklog, gewogen pipelin
 (sinds deze versie) ouderdomsanalyse debiteuren/crediteuren, klantconcentratie in de
 gefactureerde omzet, en de benodigde break-evenomzet per maand.
 
-Vier tabbladen: **Overzicht** (de KPI's, met de standen door de tijd), **Winst &
+Vijf tabbladen: **Overzicht** (de KPI's, met de standen door de tijd), **Winst &
 verlies** (de W&V tot op grootboekniveau, met een aanpasbare rubrieksindeling, een
 overzicht van de grootste verschuivingen en doorklik naar de boekingsregels),
-**Voorraad** en **Actieplan**.
+**Kasprognose** (13 weken vooruit, met een betaalplan per leverancier), **Voorraad** en
+**Actieplan**.
 
 - **Backend**: Python (FastAPI), praat met Odoo via de officiële externe XML-RPC-API.
 - **Frontend**: één HTML-pagina (in `app/templates/dashboard.html`), haalt de cijfers op
@@ -102,13 +103,17 @@ Optioneel (staan anders op een verstandige standaardwaarde — zie `app/config.p
 `FIXED_MONTHLY_COSTS`, `SUBSCRIPTION_ACCOUNT_CODES`,
 `REVENUE_EXCLUDED_ACCOUNT_CODES`, `DEFERRED_REVENUE_ACCOUNT_CODE`,
 `DEFERRED_PRODUCT_NAME_PREFIXES`, `PL_REPORT_ID`, `PL_RESULT_LINE_CODE`,
-`PL_DETAIL_LINE_LIMIT`, `ODOO_RECORD_URL_TEMPLATE`.
+`PL_DETAIL_LINE_LIMIT`, `ODOO_RECORD_URL_TEMPLATE`, `FORECAST_WEEKS`,
+`PAYROLL_ACCOUNT_CODE_PREFIXES`, `PAYROLL_LOOKBACK_MONTHS`, `PAYROLL_PAY_DAY`,
+`VAT_ACCOUNT_CODE_PREFIX`, `BACKLOG_MIN_AMOUNT`, `BACKLOG_MAX_AGE_MONTHS`,
+`BACKLOG_VAT_RATE`, `DEBTOR_DELAY_DAYS`, `BACKLOG_INVOICE_DELAY_DAYS`,
+`SUGGEST_DEFER_AGE_DAYS`, `SUGGEST_SPREAD_MIN_AMOUNT`.
 
 Na het opslaan start Railway automatisch een nieuwe deployment. Onder **Settings →
 Networking** kun je een publieke URL genereren (`*.up.railway.app`) of een eigen domein
 koppelen.
 
-## Stap 4b — Database toevoegen (alleen voor de W&V-tab)
+## Stap 4b — Database toevoegen (voor de W&V-indeling, de standen en het betaalplan)
 
 De tab **Winst & verlies** haalt zijn rubrieksindeling uit het Odoo-rapport
 "Profit and loss report V2", maar je kunt die indeling in het dashboard zelf aanpassen:
@@ -124,8 +129,9 @@ nodig.
 
 **Zonder database werkt het dashboard gewoon door.** De W&V-tab toont dan de indeling
 zoals die in Odoo staat, met de melding erbij dat wijzigingen niet bewaard kunnen
-worden; de knoppen om te verplaatsen staan dan uit. Ligt de database er tijdelijk uit,
-dan gebeurt hetzelfde — de pagina blijft werken.
+worden; de knoppen om te verplaatsen staan dan uit. De Kasprognose rekent dan met "alles
+op vervaldatum" en bewaart geen betaalafspraken. Ligt de database er tijdelijk uit, dan
+gebeurt hetzelfde — de pagina blijft werken.
 
 ## Stap 4c — Standen vastleggen (aanbevolen, maar niet verplicht)
 
@@ -252,6 +258,22 @@ pytest
   in Odoo) en `PL_RESULT_LINE_CODE` (de code van de regel die het eindresultaat
   berekent). Alles waar die regel op steunt vormt de W&V-boom; losse memoblokken
   onderaan zo'n rapport vallen daarmee vanzelf buiten beeld.
+- **Kasprognose bijstellen**: op de tab Kasprognose zet je per leverancier wanneer je
+  betaalt — op vervaldatum (standaard), in één week, gespreid over een aantal weken, of
+  buiten de horizon. De curve en de kredietruimte rekenen meteen mee. Bij het openen
+  staat er een beredeneerd voorstel klaar (achterstanden ouder dan
+  `SUGGEST_DEFER_AGE_DAYS` buiten de horizon, achterstanden boven
+  `SUGGEST_SPREAD_MIN_AMOUNT` gespreid); dat neem je in één klik over en corrigeer je
+  daarna per leverancier. "Alles terug naar vervaldatum" wist alle afspraken en eigen
+  regels. Onderaan de tab voeg je eigen regels toe die niet uit Odoo komen: een
+  financieringsronde, een toezegging, een verwachte uitgave.
+- **Aannames in de kasprognose**: `DEBTOR_DELAY_DAYS` (hoeveel dagen ná de vervaldatum
+  klanten betalen), `BACKLOG_INVOICE_DELAY_DAYS` (hoe lang na de orderdatum een nog te
+  versturen factuur binnenkomt), `FORECAST_WEEKS` (de horizon), `PAYROLL_PAY_DAY`. Loon
+  wordt geschat uit `PAYROLL_ACCOUNT_CODE_PREFIXES` over de laatste
+  `PAYROLL_LOOKBACK_MONTHS` volledige maanden — de managementvergoedingen (402000)
+  zitten daar bewust niet bij, want die worden gefactureerd en staan al bij de
+  crediteuren; meetellen zou dubbeltellen zijn.
 - **Cijfers kloppen niet meer** (bv. na een reorganisatie van het rekeningschema in
   Odoo): begin met `app/config.py` — daar staan alle Basetime-specifieke aannames met
   toelichting waar ze vandaan komen.
@@ -273,6 +295,11 @@ pytest
 - **Het teken van een rekening blijft bij de rekening.** Sleep je een omzetrekening naar
   een kostenrubriek, dan houdt hij zijn omgedraaide teken. Dat is voorspelbaar, maar
   betekent wel dat zo'n verplaatsing een negatief bedrag in de kosten kan opleveren.
+- **De kasprognose is geen voorspelling maar een ondergrens.** Er zitten alleen posten
+  in die al vastliggen: openstaande facturen, bevestigde orders die nog gefactureerd
+  moeten worden, loon en btw. Nieuwe orders die nog binnen moeten komen en inkopen
+  waarvoor nog geen factuur is, zitten er niet in. De btw over het lopende kwartaal loopt
+  gedurende dat kwartaal nog op; het bedrag in de prognose is de stand tot nu.
 - **Runway** is een vereenvoudigde indicator (kredietruimte ÷ vaste maandlasten), geen
   vervanging voor een volledig scenariomodel met inkoopplanning en
   debiteuren/crediteurentiming.

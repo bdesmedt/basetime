@@ -2188,3 +2188,525 @@ def build_snapshot_series(days: int = 365) -> dict:
         "last_date": rows[-1]["date"] if rows else None,
         "storage": "postgres" if db.configured() else "geen",
     }
+
+
+# --- Kasprognose (13 weken) --------------------------------------------------
+#
+# Geen voorspelling maar een beslissingsinstrument. Bij Basetime is 89% van de
+# crediteuren al vervallen (€ 351k op 9 september 2026, waarvan Faber € 204k en de twee
+# management-BV's samen € 95k); de achterstand is feitelijk de financiering. Een prognose
+# die alles op vervaldatum inplant, laat daardoor meteen een onmogelijk tekort zien en
+# helpt niemand. Daarom bepaalt een BETAALPLAN per leverancier wanneer er betaald wordt,
+# en laat de curve zien wat die keuzes met de kredietruimte doen.
+
+WEEK_DAYS = 7
+
+
+def _monday_weeks(start: date, weeks: int) -> list[tuple[date, date]]:
+    """De weekvakken vanaf vandaag (niet vanaf maandag: de eerste week begint nú, want
+    dat is het moment waarop de ruimte telt)."""
+    return [
+        (start + timedelta(days=WEEK_DAYS * i), start + timedelta(days=WEEK_DAYS * (i + 1)))
+        for i in range(weeks)
+    ]
+
+
+def _week_of(day: date, start: date, weeks: int) -> int | None:
+    """In welk weekvak valt deze datum? Alles uit het verleden valt in week 0."""
+    index = (day - start).days // WEEK_DAYS
+    if index < 0:
+        return 0
+    return index if index < weeks else None
+
+
+def _open_items(client: OdooClient, account_type: str, sign: float, side: str) -> list[dict]:
+    rows = client.search_read(
+        "account.move.line",
+        [
+            ["parent_state", "=", "posted"],
+            ["account_id.account_type", "=", account_type],
+            ["amount_residual", "!=", 0],
+        ],
+        ["date_maturity", "date", "amount_residual", "partner_id", "move_id", "move_name"],
+        order="date_maturity asc",
+    )
+    items = []
+    for row in rows:
+        partner = row.get("partner_id") or [0, "Zonder relatie"]
+        move = row.get("move_id") or [None, ""]
+        due = row.get("date_maturity") or row.get("date")
+        items.append({
+            # De sleutel bevat de kant, want dezelfde relatie kan zowel klant als
+            # leverancier zijn (Faber Electronics is bij Basetime allebei) en die twee
+            # mogen niet één betaalafspraak delen.
+            "key": f"{side}:partner:{partner[0]}",
+            "partner": partner[1] or "Zonder relatie",
+            "due": due,
+            "amount": round((row.get("amount_residual") or 0.0) * sign, 2),
+            "move_id": move[0],
+            "move_name": row.get("move_name") or move[1] or "",
+            "move_url": odoo_record_url("account.move", move[0]) if move[0] else None,
+            "no_due_date": not row.get("date_maturity"),
+        })
+    return items
+
+
+def fetch_open_receivables(client: OdooClient) -> list[dict]:
+    return _open_items(client, "asset_receivable", 1.0, "ar")
+
+
+def fetch_open_payables(client: OdooClient) -> list[dict]:
+    """Bedragen positief = nog te betalen. Betalingen die al onderweg zijn staan in Odoo
+    met een tegengesteld teken en trekken het groepstotaal dus vanzelf omlaag."""
+    return _open_items(client, "liability_payable", -1.0, "ap")
+
+
+def fetch_sales_backlog_to_invoice(client: OdooClient) -> list[dict]:
+    """Bevestigde verkooporders die nog gefactureerd moeten worden. Dit is de belangrijkste
+    inkomende stroom in de tweede helft van de horizon; zonder deze post lijkt het alsof er
+    na een maand of twee niets meer binnenkomt.
+
+    Gefilterd tegen ruis: oude orders met een restje van een paar tientjes worden nooit
+    meer gefactureerd (bij Basetime staan er tientallen uit 2023/2024 met € 35 tot € 416)."""
+    today = date.today()
+    cutoff = _add_months(_month_start(today), -config.BACKLOG_MAX_AGE_MONTHS)
+    rows = client.search_read(
+        "sale.order",
+        [
+            ["state", "=", "sale"],
+            ["amount_to_invoice", ">=", config.BACKLOG_MIN_AMOUNT],
+            ["date_order", ">=", _iso(cutoff)],
+        ],
+        ["name", "partner_id", "date_order", "commitment_date",
+         "amount_to_invoice", "amount_untaxed", "amount_total"],
+        order="date_order asc",
+    )
+    out = []
+    for row in rows:
+        partner = row.get("partner_id") or [0, ""]
+        untaxed = row.get("amount_untaxed") or 0.0
+        total = row.get("amount_total") or 0.0
+        # btw-opslag uit de order zelf halen in plaats van een vast percentage aannemen:
+        # buitenlandse klanten hebben vaak 0% en zouden anders te hoog uitkomen.
+        factor = (total / untaxed) if untaxed else (1 + config.BACKLOG_VAT_RATE)
+        base_raw = row.get("commitment_date") or row.get("date_order") or ""
+        base = datetime.strptime(base_raw[:10], "%Y-%m-%d").date() if base_raw else today
+        if base < today:
+            base = today
+        expected = base + timedelta(days=config.BACKLOG_INVOICE_DELAY_DAYS)
+        out.append({
+            "key": f"order:{row['id']}",
+            "order": row.get("name") or "",
+            "partner": partner[1] or "",
+            "amount": round((row.get("amount_to_invoice") or 0.0) * factor, 2),
+            "amount_excl": round(row.get("amount_to_invoice") or 0.0, 2),
+            "expected": _iso(expected),
+            "order_url": odoo_record_url("sale.order", row["id"]),
+        })
+    return out
+
+
+def estimate_monthly_payroll(client: OdooClient) -> dict:
+    """Loonkosten per maand, afgeleid uit de laatste volledige maanden. Salarissen lopen
+    niet als factuur door Odoo en staan dus niet bij de crediteuren, terwijl het wel de
+    grootste vaste uitgaande stroom is."""
+    months = max(1, config.PAYROLL_LOOKBACK_MONTHS)
+    windows = complete_month_windows(months)
+    domain = [
+        ["parent_state", "=", "posted"],
+        ["date", ">=", _iso(windows[0][0])],
+        ["date", "<", _iso(windows[-1][1])],
+    ]
+    clauses = [["account_id.code", "=like", f"{prefix}%"]
+               for prefix in config.PAYROLL_ACCOUNT_CODE_PREFIXES]
+    if clauses:
+        domain.extend(["|"] * (len(clauses) - 1))
+        domain.extend(clauses)
+    rows = client.read_group("account.move.line", domain, ["balance:sum"], ["account_id"])
+    total = sum(row.get("balance") or 0.0 for row in rows)
+    return {
+        "per_month": round(total / months, 2),
+        "months": months,
+        "from": _iso(windows[0][0]),
+        "to": _iso(windows[-1][1] - timedelta(days=1)),
+        "accounts": config.PAYROLL_ACCOUNT_CODE_PREFIXES,
+    }
+
+
+def _quarter_bounds(day: date) -> tuple[date, date, date]:
+    """Begin en einde van het kwartaal waarin `day` valt, plus de betaaldatum (laatste dag
+    van de maand ná het kwartaal)."""
+    first_month = 3 * ((day.month - 1) // 3) + 1
+    start = date(day.year, first_month, 1)
+    end = _add_months(start, 3)
+    pay = _add_months(end, 1) - timedelta(days=1)
+    return start, end, pay
+
+
+def estimate_vat_due(client: OdooClient) -> dict:
+    """Btw over het lopende kwartaal: af te dragen minus voorbelasting, te betalen aan het
+    eind van de maand ná het kwartaal. Staat niet bij de crediteuren en is dus makkelijk
+    te vergeten in een kasprognose."""
+    today = date.today()
+    start, end, pay = _quarter_bounds(today)
+    rows = client.read_group(
+        "account.move.line",
+        [
+            ["parent_state", "=", "posted"],
+            ["account_id.code", "=like", f"{config.VAT_ACCOUNT_CODE_PREFIX}%"],
+            ["date", ">=", _iso(start)],
+            ["date", "<", _iso(end)],
+        ],
+        ["balance:sum"],
+        ["account_id"],
+    )
+    saldo = sum(row.get("balance") or 0.0 for row in rows)
+    return {
+        "amount": round(-saldo, 2),          # negatief saldo op de btw-rekeningen = te betalen
+        "quarter_from": _iso(start),
+        "quarter_to": _iso(end - timedelta(days=1)),
+        "pay_date": _iso(pay),
+        "partial": today < end,              # het kwartaal loopt nog, dus dit loopt nog op
+    }
+
+
+# --- De prognose zelf --------------------------------------------------------
+
+# Categorieën waarin elke stroom valt. De volgorde is de volgorde in het scherm.
+FORECAST_CATEGORIES = ["debiteuren", "orders", "crediteuren", "loon", "btw", "overig"]
+
+# Welke betaalwijze is de standaard als er niets is ingesteld.
+DEFAULT_PLAN = {"mode": "due", "start_week": 0, "spread": 1, "note": ""}
+
+
+def _plan_for(plan: dict, key: str) -> dict:
+    entry = plan.get(key) or {}
+    return {
+        "mode": entry.get("mode") or "due",
+        "start_week": int(entry.get("start_week") or 0),
+        "spread": max(1, int(entry.get("spread") or 1)),
+        "note": entry.get("note") or "",
+        "planned": bool(entry),
+    }
+
+
+def _spread_weeks(entry: dict, weeks: int) -> tuple[int, int]:
+    """Startweek en aantal delen, altijd binnen de horizon."""
+    start_week = min(max(0, entry["start_week"]), weeks - 1)
+    parts = max(1, min(entry["spread"], weeks - start_week))
+    return start_week, parts
+
+
+def _distribute(items: list[tuple[date, float]], entry: dict, start: date, weeks: int,
+                delay_days: int = 0) -> tuple[dict[int, float], float]:
+    """Verdeelt een groep bedragen over de weken volgens de gekozen betaalwijze.
+    Geeft terug: {weeknummer: bedrag} en het bedrag dat buiten de horizon valt."""
+    per_week: dict[int, float] = {}
+    total = round(sum(amount for _, amount in items), 2)
+    mode = entry["mode"]
+
+    if mode == "defer":
+        return {}, total
+    if mode == "week":
+        week = min(max(0, entry["start_week"]), weeks - 1)
+        per_week[week] = total
+        return per_week, 0.0
+    if mode == "spread":
+        start_week, parts = _spread_weeks(entry, weeks)
+        part = total / parts
+        for i in range(parts):
+            week = start_week + i
+            per_week[week] = round(per_week.get(week, 0.0) + part, 2)
+        return per_week, 0.0
+
+    outside = 0.0
+    for day, amount in items:
+        week = _week_of(day + timedelta(days=delay_days), start, weeks)
+        if week is None:
+            outside += amount
+            continue
+        per_week[week] = round(per_week.get(week, 0.0) + amount, 2)
+    return per_week, round(outside, 2)
+
+
+def _suggest_mode(overdue: float, oldest_days: int | None, total: float) -> dict | None:
+    """Het beredeneerde startvoorstel voor één crediteurengroep. Geen automatisme: dit
+    komt als voorstel in beeld en wordt pas een plan als je het overneemt."""
+    if overdue <= 0:
+        return None
+    if oldest_days is not None and oldest_days >= config.SUGGEST_DEFER_AGE_DAYS:
+        jaren = oldest_days / 365
+        return {
+            "mode": "defer", "start_week": 0, "spread": 1,
+            "reason": f"staat al {jaren:.1f} jaar open — geen lopende verplichting meer, "
+                      f"eerst uitzoeken of dit nog betaald moet worden",
+        }
+    if overdue >= config.SUGGEST_SPREAD_MIN_AMOUNT:
+        bedrag = f"{overdue:,.0f}".replace(",", ".")
+        return {
+            "mode": "spread", "start_week": 0, "spread": config.FORECAST_WEEKS,
+            "reason": f"achterstand van € {bedrag} is te groot voor één week — voorstel: "
+                      f"in gelijke delen inlopen over de horizon",
+        }
+    return None
+
+
+def _group_items(rows: list[dict], side: str, category: str, plan: dict,
+                 start: date, weeks: int, today: date,
+                 delay_days: int = 0, suggest: bool = False) -> list[dict]:
+    """Bundelt losse posten per betaalgroep (meestal per relatie) en verdeelt elke groep
+    over de weken volgens het betaalplan."""
+    buckets: dict[str, dict] = {}
+    for row in rows:
+        bucket = buckets.setdefault(row["key"], {
+            "key": row["key"], "label": row.get("partner") or row.get("order") or "Overig",
+            "side": side, "category": category, "items": [],
+        })
+        bucket["items"].append(row)
+
+    groups = []
+    for bucket in buckets.values():
+        items = sorted(bucket["items"], key=lambda r: r.get("due") or r.get("expected") or "")
+        pairs: list[tuple[date, float]] = []
+        overdue = 0.0
+        oldest_days = None
+        for row in items:
+            iso = row.get("due") or row.get("expected")
+            day = datetime.strptime(iso[:10], "%Y-%m-%d").date() if iso else today
+            pairs.append((day, row["amount"]))
+            if day < today and row["amount"] > 0:
+                overdue += row["amount"]
+                age = (today - day).days
+                oldest_days = age if oldest_days is None else max(oldest_days, age)
+        entry = _plan_for(plan, bucket["key"])
+        per_week, outside = _distribute(pairs, entry, start, weeks, delay_days)
+        total = round(sum(amount for _, amount in pairs), 2)
+        group = {
+            **bucket,
+            "items": items,
+            "count": len(items),
+            "total": total,
+            "overdue": round(overdue, 2),
+            "oldest_days": oldest_days,
+            "in_horizon": round(sum(per_week.values()), 2),
+            "outside_horizon": outside,
+            "per_week": per_week,
+            "mode": entry["mode"],
+            "start_week": entry["start_week"],
+            "spread": entry["spread"],
+            "note": entry["note"],
+            "planned": entry["planned"],
+        }
+        if suggest and not entry["planned"]:
+            proposal = _suggest_mode(overdue, oldest_days, total)
+            if proposal:
+                group["suggestion"] = proposal
+        groups.append(group)
+
+    groups.sort(key=lambda g: -abs(g["total"]))
+    return groups
+
+
+def _payroll_group(payroll: dict, plan: dict, start: date, weeks: int) -> dict | None:
+    """De maandelijkse loonbetaling, op de betaaldag van elke maand binnen de horizon."""
+    amount = payroll.get("per_month") or 0.0
+    if amount <= 0:
+        return None
+    horizon_end = start + timedelta(days=WEEK_DAYS * weeks)
+    pairs: list[tuple[date, float]] = []
+    day = _month_start(start)
+    while day < horizon_end:
+        pay_day = min(config.PAYROLL_PAY_DAY, _days_in_month(day))
+        moment = date(day.year, day.month, pay_day)
+        if start <= moment < horizon_end:
+            pairs.append((moment, amount))
+        day = _add_months(day, 1)
+    if not pairs:
+        return None
+    entry = _plan_for(plan, "payroll")
+    per_week, outside = _distribute(pairs, entry, start, weeks)
+    return {
+        "key": "payroll", "label": "Salarissen, loonheffing en pensioen",
+        "side": "uit", "category": "loon",
+        "items": [{"label": f"loonbetaling {DUTCH_MONTH_ABBR[d.month]}", "due": _iso(d),
+                   "amount": a} for d, a in pairs],
+        "count": len(pairs),
+        "total": round(sum(a for _, a in pairs), 2),
+        "overdue": 0.0, "oldest_days": None,
+        "in_horizon": round(sum(per_week.values()), 2), "outside_horizon": outside,
+        "per_week": per_week,
+        "mode": entry["mode"], "start_week": entry["start_week"], "spread": entry["spread"],
+        "note": entry["note"] or (
+            f"gemiddelde van {payroll.get('months')} maanden ({payroll.get('from')} t/m "
+            f"{payroll.get('to')}), betaaldag de {config.PAYROLL_PAY_DAY}e"),
+        "planned": entry["planned"],
+    }
+
+
+def _vat_group(vat: dict, plan: dict, start: date, weeks: int) -> dict | None:
+    amount = vat.get("amount") or 0.0
+    if abs(amount) < 1:
+        return None
+    day = datetime.strptime(vat["pay_date"], "%Y-%m-%d").date()
+    entry = _plan_for(plan, "vat")
+    per_week, outside = _distribute([(day, amount)], entry, start, weeks)
+    partial = " (kwartaal loopt nog, dit bedrag loopt dus nog op)" if vat.get("partial") else ""
+    return {
+        "key": "vat", "label": f"Btw {vat.get('quarter_from')} t/m {vat.get('quarter_to')}",
+        "side": "uit", "category": "btw",
+        "items": [{"label": "btw-aangifte", "due": vat["pay_date"], "amount": amount}],
+        "count": 1, "total": round(amount, 2), "overdue": 0.0, "oldest_days": None,
+        "in_horizon": round(sum(per_week.values()), 2), "outside_horizon": outside,
+        "per_week": per_week,
+        "mode": entry["mode"], "start_week": entry["start_week"], "spread": entry["spread"],
+        "note": entry["note"] or f"te betalen op {vat.get('pay_date')}{partial}",
+        "planned": entry["planned"],
+    }
+
+
+def _extras_groups(extras: list[dict], start: date, weeks: int) -> list[dict]:
+    """Eigen regels: een financieringsronde, een toegezegde betaling, een verwachte
+    uitgave. Deze zijn al volledig door de gebruiker bepaald en kennen geen betaalplan."""
+    groups = []
+    for extra in extras:
+        day = datetime.strptime(extra["date"][:10], "%Y-%m-%d").date()
+        week = _week_of(day, start, weeks)
+        per_week = {week: round(extra["amount"], 2)} if week is not None else {}
+        groups.append({
+            "key": f"extra:{extra['id']}", "label": extra["label"],
+            "side": "in" if extra["amount"] >= 0 else "uit", "category": "overig",
+            "items": [{"label": extra["label"], "due": extra["date"], "amount": extra["amount"]}],
+            "count": 1, "total": round(extra["amount"], 2),
+            "overdue": 0.0, "oldest_days": None,
+            "in_horizon": round(sum(per_week.values()), 2),
+            "outside_horizon": 0.0 if week is not None else round(extra["amount"], 2),
+            "per_week": per_week,
+            "mode": "due", "start_week": 0, "spread": 1,
+            "note": extra.get("note") or "", "planned": True, "extra_id": extra["id"],
+        })
+    return groups
+
+
+def _days_in_month(day: date) -> int:
+    return (_add_months(_month_start(day), 1) - _month_start(day)).days
+
+
+def build_cash_forecast(weeks: int | None = None) -> dict:
+    """De 13-wekenkasprognose: wat er feitelijk vastligt aan in- en uitgaande stromen,
+    plus wat jouw betaalkeuzes daarmee doen.
+
+    Alle bedragen zijn inclusief btw (het is een kasprognose, geen resultaatprognose).
+    Openstaande posten komen uit de facturen zelf; loon en btw lopen niet via de
+    crediteuren en worden apart geschat."""
+    weeks = weeks or config.FORECAST_WEEKS
+    client = get_client()
+    today = date.today()
+    stored = db.load_cash_plan()
+    plan = stored.get("plan") or {}
+
+    bank_now = fetch_bank_balance_now(client)
+    receivables = fetch_open_receivables(client)
+    payables = fetch_open_payables(client)
+    backlog = fetch_sales_backlog_to_invoice(client)
+    payroll = estimate_monthly_payroll(client)
+    vat = estimate_vat_due(client)
+
+    groups: list[dict] = []
+    groups += _group_items(receivables, "in", "debiteuren", plan, today, weeks, today,
+                           delay_days=config.DEBTOR_DELAY_DAYS)
+    groups += _group_items(backlog, "in", "orders", plan, today, weeks, today)
+    groups += _group_items(payables, "uit", "crediteuren", plan, today, weeks, today,
+                           suggest=True)
+    for optional in (_payroll_group(payroll, plan, today, weeks),
+                     _vat_group(vat, plan, today, weeks)):
+        if optional:
+            groups.append(optional)
+    groups += _extras_groups(stored.get("extras") or [], today, weeks)
+
+    windows = _monday_weeks(today, weeks)
+    rows = []
+    balance = bank_now
+    for index, (start_day, end_day) in enumerate(windows):
+        buckets = {category: 0.0 for category in FORECAST_CATEGORIES}
+        incoming = outgoing = 0.0
+        for group in groups:
+            amount = group["per_week"].get(index)
+            if not amount:
+                continue
+            buckets[group["category"]] += amount if group["side"] == "in" else -amount
+            if group["side"] == "in":
+                incoming += amount
+            else:
+                outgoing += amount
+        balance = round(balance + incoming - outgoing, 2)
+        rows.append({
+            "index": index,
+            "start": _iso(start_day),
+            "end": _iso(end_day - timedelta(days=1)),
+            "label": f"{start_day.day} {DUTCH_MONTH_ABBR[start_day.month]}",
+            "iso_week": start_day.isocalendar()[1],
+            "in": round(incoming, 2),
+            "out": round(outgoing, 2),
+            "net": round(incoming - outgoing, 2),
+            "balance": balance,
+            "headroom": round(balance - config.CREDIT_LIMIT, 2),
+            "breach": balance < config.CREDIT_LIMIT,
+            "categories": {key: round(value, 2) for key, value in buckets.items()},
+        })
+
+    lowest = min(rows, key=lambda r: r["balance"]) if rows else None
+    breaches = [row for row in rows if row["breach"]]
+    suggestions = [g for g in groups if g.get("suggestion")]
+
+    return {
+        "as_of": _iso(today),
+        "weeks": weeks,
+        "rows": rows,
+        "groups": groups,
+        "start_balance": bank_now,
+        "credit_limit": config.CREDIT_LIMIT,
+        "headroom_now": round(bank_now - config.CREDIT_LIMIT, 2),
+        "end_balance": rows[-1]["balance"] if rows else bank_now,
+        "lowest": lowest,
+        "first_breach": breaches[0] if breaches else None,
+        "breach_count": len(breaches),
+        "totals": {
+            "in": round(sum(row["in"] for row in rows), 2),
+            "out": round(sum(row["out"] for row in rows), 2),
+            "receivables_open": round(sum(r["amount"] for r in receivables), 2),
+            "payables_open": round(sum(r["amount"] for r in payables), 2),
+            "payables_overdue": round(sum(g["overdue"] for g in groups
+                                          if g["category"] == "crediteuren"), 2),
+            "backlog_open": round(sum(r["amount"] for r in backlog), 2),
+            "deferred": round(sum(g["outside_horizon"] for g in groups
+                                  if g["side"] == "uit"), 2),
+        },
+        "assumptions": {
+            "debtor_delay_days": config.DEBTOR_DELAY_DAYS,
+            "backlog_delay_days": config.BACKLOG_INVOICE_DELAY_DAYS,
+            "backlog_min_amount": config.BACKLOG_MIN_AMOUNT,
+            "backlog_max_age_months": config.BACKLOG_MAX_AGE_MONTHS,
+            "payroll": payroll,
+            "vat": vat,
+        },
+        "suggestions": [
+            {"key": g["key"], "label": g["label"], "overdue": g["overdue"],
+             **g["suggestion"]}
+            for g in suggestions
+        ],
+        "plan_count": len(plan),
+        "extras": stored.get("extras") or [],
+        "storage": stored.get("storage", "geen"),
+        "storage_error": stored.get("error"),
+    }
+
+
+def cash_plan_summary() -> dict:
+    """Korte bevestiging na een wijziging in het betaalplan."""
+    stored = db.load_cash_plan()
+    return {
+        "storage": stored.get("storage", "geen"),
+        "error": stored.get("error"),
+        "plan_count": len(stored.get("plan") or {}),
+        "extra_count": len(stored.get("extras") or []),
+    }

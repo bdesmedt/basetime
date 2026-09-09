@@ -103,6 +103,51 @@ SNAPSHOT_CHECK_MINUTES = int(_get_env("SNAPSHOT_CHECK_MINUTES", "60"))
 # Odoo-aanroep overheen gaat.
 SNAPSHOT_STARTUP_DELAY_SECONDS = int(_get_env("SNAPSHOT_STARTUP_DELAY_SECONDS", "90"))
 
+# --- Kasprognose -------------------------------------------------------------
+# Aantal weken vooruit. 13 weken is de gangbare horizon voor een kasprognose: ver genoeg
+# om een probleem te zien aankomen, kort genoeg om nog te kunnen sturen.
+FORECAST_WEEKS = int(_get_env("FORECAST_WEEKS", "13"))
+
+# Loonkosten lopen niet als factuur door Odoo en staan dus niet bij de crediteuren, maar
+# ze zijn wel de grootste vaste uitgaande stroom. Het dashboard leidt het maandbedrag af
+# uit deze grootboekreeksen, gemiddeld over de laatste volledige maanden. Let op: de
+# managementvergoedingen (402000) zitten er BEWUST niet bij — die worden gefactureerd en
+# staan dus al bij de crediteuren; meetellen zou dubbeltellen zijn.
+PAYROLL_ACCOUNT_CODE_PREFIXES = [
+    p.strip() for p in _get_env("PAYROLL_ACCOUNT_CODE_PREFIXES", "400,4010,4011").split(",")
+    if p.strip()
+]
+PAYROLL_LOOKBACK_MONTHS = int(_get_env("PAYROLL_LOOKBACK_MONTHS", "3"))
+PAYROLL_PAY_DAY = int(_get_env("PAYROLL_PAY_DAY", "25"))
+
+# Btw-rekeningen (af te dragen én voorbelasting). Het saldo over het lopende kwartaal is
+# wat er aan het eind van de maand ná dat kwartaal betaald moet worden.
+VAT_ACCOUNT_CODE_PREFIX = _get_env("VAT_ACCOUNT_CODE_PREFIX", "15")
+
+# Bevestigde verkooporders die nog gefactureerd moeten worden, tellen mee als toekomstige
+# ontvangst. Filters tegen de ruis: oude orders met een restje van een paar tientjes
+# worden nooit meer gefactureerd en horen niet in een kasprognose.
+BACKLOG_MIN_AMOUNT = float(_get_env("BACKLOG_MIN_AMOUNT", "1000"))
+BACKLOG_MAX_AGE_MONTHS = int(_get_env("BACKLOG_MAX_AGE_MONTHS", "12"))
+
+# Standaardaannames, in het dashboard bij te stellen.
+# Hoeveel dagen ná de vervaldatum klanten gemiddeld betalen.
+DEBTOR_DELAY_DAYS = int(_get_env("DEBTOR_DELAY_DAYS", "14"))
+# Na hoeveel dagen een nog te versturen factuur binnenkomt (facturatie + betaaltermijn).
+BACKLOG_INVOICE_DELAY_DAYS = int(_get_env("BACKLOG_INVOICE_DELAY_DAYS", "45"))
+# Btw-opslag op nog te factureren orderbedragen (die staan excl. btw in Odoo).
+BACKLOG_VAT_RATE = float(_get_env("BACKLOG_VAT_RATE", "0.21"))
+
+# Regels voor het beredeneerde startvoorstel per leverancier. Het dashboard zet dit
+# nooit zelf klaar als plan: het toont het als voorstel dat je in één klik overneemt of
+# per leverancier corrigeert.
+#   - Alles wat langer dan dit open staat, is feitelijk geen lopende verplichting meer
+#     en wordt voorgesteld als "buiten de horizon" (bij Basetime: SODAQ, 2023/2024).
+SUGGEST_DEFER_AGE_DAYS = int(_get_env("SUGGEST_DEFER_AGE_DAYS", "540"))
+#   - Een achterstand boven dit bedrag kun je niet in één week ophoesten; voorstel is
+#     spreiden over de horizon (bij Basetime: Faber Electronics).
+SUGGEST_SPREAD_MIN_AMOUNT = float(_get_env("SUGGEST_SPREAD_MIN_AMOUNT", "25000"))
+
 # --- Cache ------------------------------------------------------------------
 # Hoe lang (in seconden) een opgehaalde KPI-set warm blijft voordat een nieuwe
 # paginabezoek een verse Odoo-query triggert. 900s = 15 minuten. Zet lager als je
