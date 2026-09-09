@@ -185,6 +185,87 @@
   .action-row .action-meta { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
   .action-row .action-effect { font-size: 14px; font-weight: 650; color: var(--text-primary); white-space: nowrap; text-align: right; }
   .action-row.done .action-effect { color: var(--text-muted); }
+
+  /* --- W&V-tab ------------------------------------------------------------ */
+  .pl-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .pl-toolbar .spacer { flex: 1 1 auto; }
+  .pl-select { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+               color: var(--text-primary); font-size: 12.5px; padding: 5px 8px; font-family: inherit; }
+  .pl-chip { font-size: 11.5px; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+             background: var(--surface-1); border: 1px solid var(--border); color: var(--text-muted); }
+  .pl-chip.on { background: rgba(250,178,25,0.14); border-color: var(--status-warning); color: var(--text-primary); font-weight: 600; }
+
+  .pl-panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .pl-scroll { overflow-x: auto; }
+  table.pl-table { border-collapse: separate; border-spacing: 0; width: auto; min-width: 100%; font-variant-numeric: tabular-nums; font-size: 12.5px; }
+  table.pl-table th, table.pl-table td { padding: 5px 7px; text-align: right; white-space: nowrap;
+                                         border-bottom: 1px solid var(--gridline); }
+  table.pl-table th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted);
+                      font-weight: 600; background: var(--surface-1); padding-top: 9px; padding-bottom: 7px; }
+  table.pl-table th.pl-l, table.pl-table td.pl-l {
+    text-align: left; position: sticky; left: 0; z-index: 2; background: var(--surface-1); min-width: 230px;
+  }
+  table.pl-table th.pl-l { z-index: 3; }
+  /* De totaalkolom staat rechts vast: bij een periode van 12 of 24 maanden schuift de
+     tabel horizontaal, en juist het totaal wil je dan blijven zien. */
+  table.pl-table th.pl-r, table.pl-table td.pl-r {
+    position: sticky; right: 0; z-index: 2; background: var(--surface-1);
+    border-left: 1px solid var(--border);
+  }
+  table.pl-table th.pl-r { z-index: 3; }
+  tr.pl-acct td.pl-r { background: var(--surface-2); }
+  table.pl-table th.sep, table.pl-table td.sep { border-left: 1px solid var(--border); }
+  .pl-rowlabel { display: flex; align-items: center; gap: 6px; }
+  .pl-tw { width: 14px; text-align: center; color: var(--text-muted); cursor: pointer; user-select: none; font-size: 10px; }
+  .pl-tw.empty { opacity: 0; cursor: default; }
+  tr.pl-group td { font-weight: 700; color: var(--text-primary); }
+  tr.pl-group td.pl-l { padding-left: 12px; }
+  tr.pl-rubriek td.pl-l { padding-left: 28px; }
+  tr.pl-sub td.pl-l { padding-left: 44px; }
+  tr.pl-acct td { color: var(--text-secondary); }
+  tr.pl-acct td.pl-l { padding-left: 64px; }
+  tr.pl-acct td, tr.pl-acct td.pl-l { background: var(--surface-2); }
+  tr.pl-total td { font-weight: 700; border-top: 1.5px solid var(--text-muted); color: var(--text-primary); }
+  tr.pl-total.big td { font-size: 13.5px; }
+  tr.pl-unalloc td.pl-l .pl-name { color: var(--status-warning); font-weight: 700; }
+  .pl-code { color: var(--text-muted); font-size: 11.5px; margin-right: 6px; }
+  .pl-up { color: var(--status-good); }
+  .pl-down { color: var(--status-critical); }
+  tr.pl-drag { cursor: grab; }
+  tr.pl-dragging td { opacity: .4; }
+  tr.pl-drop td { background: rgba(42,120,214,0.14) !important; }
+  .pl-moved { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+              color: var(--status-warning); border: 1px solid var(--status-warning); border-radius: 999px;
+              padding: 0 6px; margin-left: 6px; }
+  .pl-iconbtn { font: inherit; font-size: 10px; line-height: 1; width: 16px; height: 16px; padding: 0; flex: 0 0 auto;
+                border-radius: 999px; cursor: pointer; border: 1px solid var(--border);
+                background: var(--surface-1); color: var(--text-muted); }
+  .pl-iconbtn:hover { border-color: var(--series-1); color: var(--series-1); }
+  .pl-movebtn { font: inherit; font-size: 10.5px; padding: 0 6px; border-radius: 5px; cursor: pointer;
+                border: 1px solid var(--border); background: var(--surface-1); color: var(--text-muted); margin-left: 6px; }
+  .pl-movebtn:hover { color: var(--text-primary); border-color: var(--series-1); }
+  .pl-foot { font-size: 11.5px; color: var(--text-muted); padding: 9px 14px; border-top: 1px solid var(--border);
+             background: var(--surface-2); white-space: normal; }
+  .pl-pop { position: fixed; z-index: 90; max-width: 340px; display: none; background: var(--surface-1);
+            border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 8px 28px rgba(0,0,0,0.22);
+            padding: 11px 13px; font-size: 12px; color: var(--text-secondary); }
+  .pl-pop h5 { margin: 0 0 5px; font-size: 12.5px; color: var(--text-primary); }
+  .pl-pop .frm { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+                 background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px;
+                 padding: 3px 6px; display: inline-block; margin-bottom: 7px; color: var(--text-primary); }
+  .pl-pop ul { margin: 0; padding-left: 15px; max-height: 210px; overflow-y: auto; }
+  .pl-pop li { margin-bottom: 2px; }
+  .pl-pop .c { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  dialog.pl-dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1);
+                     color: var(--text-primary); padding: 16px 18px; max-width: 420px; width: calc(100% - 40px);
+                     font-family: inherit; font-size: 13px; }
+  dialog.pl-dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog.pl-dialog h3 { margin: 0 0 6px; font-size: 15px; }
+  dialog.pl-dialog label { display: block; font-size: 11.5px; color: var(--text-muted); margin: 9px 0 3px; }
+  dialog.pl-dialog input, dialog.pl-dialog select {
+    font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; padding: 6px 8px;
+    border-radius: 6px; border: 1px solid var(--border); background: var(--page-plane); color: var(--text-primary); }
+  .pl-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 </style>
 </head>
 <body>
@@ -207,6 +288,7 @@
 
   <nav class="tabs">
     <button class="tab-btn active" id="tab-btn-overview" onclick="switchTab('overview')">Overzicht</button>
+    <button class="tab-btn" id="tab-btn-wv" onclick="switchTab('wv')">Winst &amp; verlies</button>
     <button class="tab-btn" id="tab-btn-voorraad" onclick="switchTab('voorraad')">Voorraad</button>
     <button class="tab-btn" id="tab-btn-actieplan" onclick="switchTab('actieplan')">Actieplan</button>
   </nav>
@@ -484,6 +566,48 @@
 
   </div>
 
+  <!-- Winst & verlies: de W&V uit Odoo tot op grootboekniveau. De rubrieksindeling komt
+       uit het Odoo-rapport (zie PL_REPORT_ID) en is hier aan te passen: rekeningen naar
+       een andere rubriek slepen, eigen rubrieken toevoegen. Die afwijkingen staan in de
+       database (db.py); zonder database toont de tab gewoon de Odoo-indeling. -->
+  <div id="tab-wv" class="tab-panel" style="display:none">
+
+    <div class="tab-meta-row">
+      <span id="pl-last-updated" style="color:var(--text-muted);font-size:12.5px;"></span>
+      <button class="btn" onclick="loadPlData(true)">Vernieuwen</button>
+    </div>
+
+    <div class="banner error" id="pl-banner-error"></div>
+    <div class="banner warn" id="pl-banner-warn"></div>
+
+    <div class="heading-row">
+      <h2 class="section">Winst &amp; verlies</h2>
+    </div>
+    <p class="section-note" id="pl-source-note">Laden…</p>
+
+    <div class="pl-toolbar">
+      <select class="pl-select" id="pl-mode" onchange="setPlMode(this.value)"></select>
+      <button class="btn" onclick="setPlOpenAll(true)">Alles uitklappen</button>
+      <button class="btn" onclick="setPlOpenAll(false)">Alles inklappen</button>
+      <span class="spacer"></span>
+      <span class="pl-chip" id="pl-status-chip">Indeling volgt Odoo</span>
+      <button class="btn" id="pl-add-rubriek" onclick="openPlRubriekDialog()">+ Rubriek</button>
+      <button class="btn" id="pl-reset" onclick="resetPlLayout()">Terug naar Odoo</button>
+    </div>
+
+    <div class="pl-panel">
+      <div class="pl-scroll">
+        <table class="pl-table" id="pl-table">
+          <thead><tr id="pl-head"></tr></thead>
+          <tbody id="pl-body"><tr><td class="pl-l"><span class="skeleton">Laden…</span></td></tr></tbody>
+        </table>
+      </div>
+      <div class="pl-foot" id="pl-control"></div>
+      <div class="pl-foot" id="pl-help"></div>
+    </div>
+
+  </div>
+
   <footer>Basetime B.V. · basetimebv.odoo.com · KPI-dashboard</footer>
 </div>
 
@@ -504,6 +628,31 @@
     </div>
   </div>
 </div>
+
+<div class="pl-pop" id="pl-pop"></div>
+
+<dialog class="pl-dialog" id="pl-rubriek-dialog">
+  <h3>Nieuwe rubriek</h3>
+  <label for="pl-rubriek-naam">Naam</label>
+  <input id="pl-rubriek-naam" maxlength="80" placeholder="bijv. Marketing — betaald">
+  <label for="pl-rubriek-parent">Valt onder</label>
+  <select id="pl-rubriek-parent"></select>
+  <div class="pl-dialog-actions">
+    <button class="btn" onclick="document.getElementById('pl-rubriek-dialog').close()">Annuleren</button>
+    <button class="btn" onclick="submitPlRubriek()">Toevoegen</button>
+  </div>
+</dialog>
+
+<dialog class="pl-dialog" id="pl-move-dialog">
+  <h3>Verplaats rekening</h3>
+  <p id="pl-move-what" style="margin:0;color:var(--text-secondary);"></p>
+  <label for="pl-move-target">Naar rubriek</label>
+  <select id="pl-move-target"></select>
+  <div class="pl-dialog-actions">
+    <button class="btn" onclick="document.getElementById('pl-move-dialog').close()">Annuleren</button>
+    <button class="btn" onclick="submitPlMove()">Verplaatsen</button>
+  </div>
+</dialog>
 </div>
 
 <script>
@@ -537,13 +686,14 @@ function toggleTheme(){
 
 let inventoryLoaded = false;
 
-const TAB_NAMES = ['overview', 'voorraad', 'actieplan'];
+const TAB_NAMES = ['overview', 'wv', 'voorraad', 'actieplan'];
 
 function switchTab(name){
   TAB_NAMES.forEach(n => {
     document.getElementById('tab-' + n).style.display = (n === name) ? 'block' : 'none';
     document.getElementById('tab-btn-' + n).classList.toggle('active', n === name);
   });
+  if (name === 'wv' && !plLoaded) loadPlData(false);
   if (name === 'voorraad' && !inventoryLoaded) loadInventoryData(false);
   if (name === 'actieplan' && !actieplanRendered) renderActieplan();
 }
@@ -1059,6 +1209,26 @@ function render(payload){
   // laatste vólle maand en "waar staan we nu" naast elkaar ziet zonder ze te verwarren.
   const mtd = (text) => cm ? ' · ' + cm.label + ' t/m nu: ' + text : '';
   tilesBottom.appendChild(tile('Order intake — ' + lastMonthLabel, fmtEUR0.format(payload.order_intake[payload.order_intake.length-1] || 0), payload.window.label_text + ': ' + fmtEUR0.format(payload.order_intake_sum) + mtd(fmtEUR0.format(cm ? cm.order_intake : 0)), null, payload.order_intake, css('--series-1')));
+  // Netto-omzet van de LOPENDE maand, zonder de recurring omzet. De omzetreeks bevat
+  // de subscription-rekeningen (800500/510/520) namelijk gewoon; door die eruit te
+  // halen staat hier de "gewone" omzet van deze maand, en de tegel ernaast toont de
+  // recurring apart. Zo tel je ze niet per ongeluk dubbel bij het lezen.
+  if (cm){
+    const exclNow  = (cm.revenue || 0) - (cm.recurring_revenue || 0);
+    const inclNow  = cm.revenue || 0;
+    const lastFull = (payload.revenue[payload.revenue.length-1] || 0)
+                   - (payload.recurring_revenue[payload.recurring_revenue.length-1] || 0);
+    // historische reeks zonder recurring, voor het lijntje in de tegel
+    const exclSeries = payload.revenue.map((r,i) => r - (payload.recurring_revenue[i] || 0));
+    tilesBottom.appendChild(tile(
+      'Netto-omzet — ' + cm.label + ' t/m nu',
+      fmtEUR0.format(exclNow),
+      'excl. recurring · incl. recurring: ' + fmtEUR0.format(inclNow)
+        + ' · ' + lastMonthLabel + ' volledig: ' + fmtEUR0.format(lastFull),
+      null, exclSeries, css('--series-1')
+    ));
+  }
+  tilesBottom.appendChild(tile('Recurring omzet (subscription) — ' + lastMonthLabel, fmtEUR0.format(payload.recurring_revenue[payload.recurring_revenue.length-1] || 0), 'gem. ' + fmtEUR0.format(payload.recurring_revenue_avg) + ' / mnd' + mtd(fmtEUR0.format(cm ? cm.recurring_revenue : 0)), null, payload.recurring_revenue, css('--series-3')));
   if (payload.deferred_revenue_balance !== undefined && payload.deferred_revenue_balance !== null){
     tilesBottom.appendChild(tile(
       'Nog te nemen omzet',
@@ -1069,7 +1239,6 @@ function render(payload){
             : '')
     ));
   }
-  tilesBottom.appendChild(tile('Recurring omzet (subscription) — ' + lastMonthLabel, fmtEUR0.format(payload.recurring_revenue[payload.recurring_revenue.length-1] || 0), 'gem. ' + fmtEUR0.format(payload.recurring_revenue_avg) + ' / mnd' + mtd(fmtEUR0.format(cm ? cm.recurring_revenue : 0)), null, payload.recurring_revenue, css('--series-3')));
   tilesBottom.appendChild(tile('Brutomarge — ' + lastMonthLabel, fmtPct(payload.margin_pct[lastIdx]), payload.window.label_text + mtd(fmtPct(cm ? cm.margin_pct : 0)), null, payload.margin_pct, css('--series-1')));
 
   const topDeal = payload.pipeline.top_deals[0];
@@ -1661,6 +1830,7 @@ function reloadForPeriod(){
   syncPeriodControls();
   loadData(false);
   if (inventoryLoaded) loadInventoryData(false);
+  if (plLoaded) loadPlData(false);
   // de doorklikschermen golden voor de vorige periode, dus die cache moet leeg
   Object.keys(detailCache).forEach(k => delete detailCache[k]);
   detailState.rawData = null;
@@ -1684,6 +1854,538 @@ function applyPeriodRange(){
   }
   currentPeriod = { from: from, to: to };
   reloadForPeriod();
+}
+
+// --- Winst & verlies --------------------------------------------------------
+// De tab rekent zélf de rubriektotalen uit de losse grootboekregels uit de payload.
+// Dat is bewust: zo is het verslepen van een rekening meteen zichtbaar, zonder eerst
+// terug te hoeven naar de server (en dus naar Odoo).
+
+let plLoaded = false;
+let plData = null;
+let plById = {};          // id -> node uit de boom
+let plSign = {};          // id -> teken waarmee de regel in het eindresultaat meetelt
+let plModes = [];
+let plModeIndex = 0;
+let plOpen = new Set();
+let plPopFor = null;
+let plMoveCode = null;
+
+function plCanEdit(){
+  return !!(plData && plData.layout && plData.layout.storage === 'postgres');
+}
+
+function plIndexTree(){
+  plById = {};
+  const walk = (nodes) => nodes.forEach(n => { plById[n.id] = n; walk(n.children || []); });
+  walk(plData.tree);
+  plSign = {};
+  const visit = (id, sign) => {
+    const n = plById[id];
+    if (!n || plSign[id] !== undefined) return;
+    plSign[id] = sign;
+    if (n.kind === 'group') (n.children || []).forEach(c => visit(c.id, sign * (n.signs[c.id] || 1)));
+    if (n.kind === 'calc') (n.refs || []).forEach(r => visit(r.id, sign * r.sign));
+  };
+  visit(plData.result_line_id, 1);
+}
+
+function plMonthLabel(m){ return m.label + (m.partial ? '*' : ''); }
+
+function plYearSpanLabel(months, shiftYears){
+  if (!months.length) return '';
+  const y = (k) => (parseInt(k.slice(0, 4), 10) + (shiftYears || 0));
+  const first = months[0], last = months[months.length - 1];
+  const base = first.label.replace(/ '\d\d$/, '') + '–' + last.label.replace(/ '\d\d$/, '');
+  return base + ' ' + (y(first.key) === y(last.key) ? y(first.key) : y(first.key) + '/' + y(last.key));
+}
+
+function plBuildModes(){
+  const all = plData.months;
+  const complete = all.filter(m => !m.partial);
+  const sum = (a, list) => list.reduce((s, m) => s + (a.m[m.key] || 0), 0);
+  const monthCol = (m) => ({ key: m.key, label: plMonthLabel(m), val: a => a.m[m.key] || 0 });
+  const totalCol = (list, label) => ({
+    key: 'tot', label: label || 'Totaal', sticky: true, val: a => sum(a, list),
+  });
+
+  const modes = [];
+  if (complete.length){
+    modes.push({
+      id: 'period',
+      label: 'Periode · vergeleken met vorig jaar',
+      cols: [
+        { key: 'cur',  label: plYearSpanLabel(complete, 0), val: a => sum(a, complete) },
+        { key: 'prev', label: plYearSpanLabel(complete, -1), val: a => a.prev },
+        { key: 'd', label: 'Δ',   type: 'delta', a: 'cur', b: 'prev', sep: true },
+        { key: 'p', label: 'Δ %', type: 'pct',   a: 'cur', b: 'prev' },
+      ],
+      main: 'cur', mainMonths: complete,
+    });
+  }
+  modes.push({
+    id: 'months', label: 'Alle maanden naast elkaar',
+    cols: all.map(monthCol).concat([totalCol(all)]), main: 'tot', mainMonths: all,
+  });
+  [6, 3].forEach(n => {
+    if (all.length > n){
+      const slice = all.slice(-n);
+      modes.push({
+        id: 'm' + n, label: 'Laatste ' + n + ' maanden',
+        cols: slice.map(monthCol).concat([totalCol(slice)]), main: 'tot', mainMonths: slice,
+      });
+    }
+  });
+  if (all.length >= 2){
+    const a0 = all[all.length - 1], a1 = all[all.length - 2];
+    modes.push({
+      id: 'mm', label: plMonthLabel(a0) + ' · vergeleken met ' + plMonthLabel(a1),
+      cols: [
+        { key: 'c0', label: plMonthLabel(a0), val: a => a.m[a0.key] || 0 },
+        { key: 'c1', label: plMonthLabel(a1), val: a => a.m[a1.key] || 0 },
+        { key: 'd', label: 'Δ',   type: 'delta', a: 'c0', b: 'c1', sep: true },
+        { key: 'p', label: 'Δ %', type: 'pct',   a: 'c0', b: 'c1' },
+      ],
+      main: 'c0', mainMonths: [a0],
+    });
+  }
+  plModes = modes;
+  if (plModeIndex >= modes.length) plModeIndex = 0;
+  const sel = document.getElementById('pl-mode');
+  sel.innerHTML = modes.map((m, i) => '<option value="' + i + '">' + m.label + '</option>').join('');
+  sel.value = String(plModeIndex);
+}
+
+function plMode(){ return plModes[plModeIndex]; }
+
+function plAccountsIn(rid, useDefault){
+  // useDefault = de indeling zoals Odoo die berekent, dus zonder eigen aanpassingen.
+  return plData.accounts.filter(a => (useDefault ? a.default_rubriek : a.rubriek) === rid);
+}
+
+function plNodeValue(node, col, useDefault){
+  if (!node) return 0;
+  if (node.kind === 'group'){
+    return (node.children || []).reduce(
+      (s, c) => s + (node.signs[c.id] || 1) * plNodeValue(c, col, useDefault), 0);
+  }
+  if (node.kind === 'calc'){
+    return (node.refs || []).reduce((s, r) => s + r.sign * plNodeValue(plById[r.id], col, useDefault), 0);
+  }
+  if (node.kind === 'rubriek'){
+    return plAccountsIn(node.id, useDefault).reduce((s, a) => s + col.val(a), 0);
+  }
+  return 0;
+}
+
+function plFmt(v){ return (Math.abs(v) < 0.5) ? '—' : fmtEUR0.format(v); }
+
+function plCells(getBase, invert){
+  const seen = {};
+  return plMode().cols.map(col => {
+    if (col.type === 'delta' || col.type === 'pct'){
+      const a = seen[col.a], b = seen[col.b];
+      if (col.type === 'delta'){
+        const d = a - b;
+        if (Math.abs(d) < 0.5) return { t: '—', c: '', sep: col.sep, sticky: col.sticky };
+        return { t: fmtEUR0.format(d), c: (d > 0) !== !!invert ? 'pl-up' : 'pl-down', sep: col.sep, sticky: col.sticky };
+      }
+      if (Math.abs(b) < 0.5) return { t: '—', c: '', sep: col.sep, sticky: col.sticky };
+      const p = (a - b) / Math.abs(b) * 100;
+      return {
+        t: (p > 0 ? '+' : '') + p.toFixed(0) + '%',
+        c: (p > 0) !== !!invert ? 'pl-up' : 'pl-down', sep: col.sep, sticky: col.sticky,
+      };
+    }
+    const v = getBase(col);
+    seen[col.key] = v;
+    return { t: plFmt(v), c: '', sep: col.sep, sticky: col.sticky };
+  });
+}
+
+function plPutCells(tr, cells){
+  cells.forEach(c => {
+    const td = tr.insertCell();
+    td.textContent = c.t;
+    td.className = (c.c || '') + (c.sep ? ' sep' : '') + (c.sticky ? ' pl-r' : '');
+  });
+}
+
+function plLabelCell(tr, text, level, opts){
+  opts = opts || {};
+  const td = tr.insertCell();
+  td.className = 'pl-l';
+  const box = document.createElement('div');
+  box.className = 'pl-rowlabel';
+  const tw = document.createElement('span');
+  tw.className = 'pl-tw' + (opts.toggle ? '' : ' empty');
+  tw.textContent = opts.toggle ? (opts.isOpen ? '▾' : '▸') : '·';
+  if (opts.toggle) tw.onclick = opts.toggle;
+  box.appendChild(tw);
+  if (opts.code){
+    const c = document.createElement('span');
+    c.className = 'pl-code'; c.textContent = opts.code; box.appendChild(c);
+  }
+  const nm = document.createElement('span');
+  nm.className = 'pl-name'; nm.textContent = text; box.appendChild(nm);
+  if (opts.info){
+    const b = document.createElement('button');
+    b.className = 'pl-iconbtn'; b.textContent = 'i';
+    b.title = 'Welke grootboekrekeningen vallen hierin?';
+    b.onclick = (e) => { e.stopPropagation(); opts.info(b); };
+    box.appendChild(b);
+  }
+  if (opts.moved){
+    const b = document.createElement('span');
+    b.className = 'pl-moved'; b.textContent = 'verplaatst'; box.appendChild(b);
+  }
+  if (opts.onMove){
+    const b = document.createElement('button');
+    b.className = 'pl-movebtn'; b.textContent = '⇄';
+    b.title = 'Verplaats naar een andere rubriek';
+    b.onclick = (e) => { e.stopPropagation(); opts.onMove(); };
+    box.appendChild(b);
+  }
+  if (opts.onDelete){
+    const b = document.createElement('button');
+    b.className = 'pl-movebtn'; b.textContent = '✕';
+    b.title = 'Verwijder deze zelf toegevoegde rubriek';
+    b.onclick = (e) => { e.stopPropagation(); opts.onDelete(); };
+    box.appendChild(b);
+  }
+  td.appendChild(box);
+  tr.className += ' pl-' + level;
+}
+
+function plToggle(id){
+  return () => { plOpen.has(id) ? plOpen.delete(id) : plOpen.add(id); renderPl(); };
+}
+
+function plRenderRubriek(tbody, node, level){
+  const accts = plAccountsIn(node.id);
+  const isOpen = plOpen.has(node.id);
+  const invert = plSign[node.id] === -1;
+  const tr = tbody.insertRow();
+  tr.dataset.rubriek = node.id;
+  plLabelCell(tr, node.name, level, {
+    toggle: accts.length ? plToggle(node.id) : null,
+    isOpen: isOpen,
+    info: (btn) => showPlInfo(btn, node),
+    onDelete: (node.custom && plCanEdit()) ? () => deletePlRubriek(node) : null,
+  });
+  if (node.unallocated && accts.length) tr.classList.add('pl-unalloc');
+  plPutCells(tr, plCells(col => plNodeValue(node, col), invert));
+  plMakeDropTarget(tr, node.id);
+  if (isOpen){
+    accts.slice().sort((a, b) => a.code.localeCompare(b.code))
+         .forEach(a => plRenderAccount(tbody, a, invert));
+  }
+}
+
+function plRenderAccount(tbody, a, invert){
+  const tr = tbody.insertRow();
+  tr.className = 'pl-drag';
+  tr.dataset.code = a.code;
+  if (plCanEdit()) tr.draggable = true;
+  plLabelCell(tr, a.name, 'acct', {
+    code: a.code,
+    moved: a.rubriek !== a.default_rubriek,
+    onMove: plCanEdit() ? () => openPlMoveDialog(a) : null,
+  });
+  plPutCells(tr, plCells(col => col.val(a), invert));
+  if (!plCanEdit()) return;
+  tr.addEventListener('dragstart', (e) => {
+    e.dataTransfer.setData('text/plain', a.code);
+    e.dataTransfer.effectAllowed = 'move';
+    tr.classList.add('pl-dragging');
+  });
+  tr.addEventListener('dragend', () => tr.classList.remove('pl-dragging'));
+}
+
+function plMakeDropTarget(tr, rid){
+  if (!plCanEdit()) return;
+  tr.addEventListener('dragover', (e) => {
+    e.preventDefault(); e.dataTransfer.dropEffect = 'move'; tr.classList.add('pl-drop');
+  });
+  tr.addEventListener('dragleave', () => tr.classList.remove('pl-drop'));
+  tr.addEventListener('drop', (e) => {
+    e.preventDefault(); tr.classList.remove('pl-drop');
+    const code = e.dataTransfer.getData('text/plain');
+    if (code) movePlAccount(code, rid);
+  });
+}
+
+function plRenderNode(tbody, node, level){
+  if (node.kind === 'rubriek'){ plRenderRubriek(tbody, node, level); return; }
+  const invert = plSign[node.id] === -1;
+  if (node.kind === 'group'){
+    const isOpen = plOpen.has(node.id);
+    const tr = tbody.insertRow();
+    plLabelCell(tr, node.name, 'group', { toggle: plToggle(node.id), isOpen: isOpen });
+    plPutCells(tr, plCells(col => plNodeValue(node, col), invert));
+    tr.classList.add('pl-total');
+    if (isOpen){
+      (node.children || []).forEach(c => plRenderNode(tbody, c, level === 'group' ? 'rubriek' : 'sub'));
+    }
+    return;
+  }
+  if (node.kind === 'calc'){
+    const tr = tbody.insertRow();
+    plLabelCell(tr, node.name, 'group', {});
+    plPutCells(tr, plCells(col => plNodeValue(node, col), false));
+    tr.classList.add('pl-total');
+    if (node.id === plData.result_line_id) tr.classList.add('big');
+  }
+}
+
+function plRenderHead(){
+  const head = document.getElementById('pl-head');
+  head.innerHTML = '';
+  const th0 = document.createElement('th');
+  th0.className = 'pl-l';
+  th0.textContent = 'Rubriek / grootboekrekening';
+  head.appendChild(th0);
+  plMode().cols.forEach(c => {
+    const th = document.createElement('th');
+    th.textContent = c.label;
+    th.className = (c.sep ? 'sep' : '') + (c.sticky ? ' pl-r' : '');
+    head.appendChild(th);
+  });
+}
+
+function renderPl(){
+  hidePlPop();
+  plRenderHead();
+  const tbody = document.getElementById('pl-body');
+  tbody.innerHTML = '';
+  plData.tree.forEach(n => plRenderNode(tbody, n, 'group'));
+
+  // Controleregel: hetzelfde eindresultaat, één keer met de eigen indeling en één keer
+  // met de indeling die het Odoo-rapport zelf berekent. Verplaatsen binnen de boom
+  // verandert het eindresultaat niet; het verschil kan dus alleen komen van rekeningen
+  // die Odoo in geen enkele codereeks vangt en die hier wél zijn ingedeeld.
+  const col = plMode().cols.find(c => c.key === plMode().main) || plMode().cols[0];
+  const resultNode = plById[plData.result_line_id];
+  const dash = plNodeValue(resultNode, col, false);
+  const odoo = plNodeValue(resultNode, col, true);
+  const unallocated = plNodeValue(plById[plData.unallocated_id], col, false);
+  const diff = dash - odoo;
+  let control =
+    '<b>Controle tegen Odoo</b> (' + col.label + ') · ' + resultNode.name +
+    ': dit dashboard ' + fmtEUR0.format(dash) +
+    ', het rapport “' + plData.report.name + '” in Odoo ' + fmtEUR0.format(odoo);
+  control += (Math.abs(diff) < 0.5)
+    ? ' — sluit exact aan.'
+    : ' — verschil ' + fmtEUR0.format(diff) + ': rekeningen die in geen enkele codereeks van '
+      + 'het Odoo-rapport vallen en hier wél zijn ingedeeld.';
+  if (Math.abs(unallocated) >= 0.5){
+    control += ' <b>Let op:</b> ' + fmtEUR0.format(unallocated) + ' staat nog in “Niet ingedeeld” '
+      + 'en telt daardoor nergens mee — niet hier en niet in Odoo.';
+  }
+  if ((plMode().mainMonths || []).some(m => m.partial)){
+    control += ' De maand met een * loopt nog en is dus geen volledige maand.';
+  }
+  document.getElementById('pl-control').innerHTML = control;
+
+  const changes = plData.accounts.filter(a => a.rubriek !== a.default_rubriek).length
+                + (plData.layout.custom_count || 0);
+  const chip = document.getElementById('pl-status-chip');
+  chip.textContent = changes === 0 ? 'Indeling volgt Odoo'
+    : changes + (changes === 1 ? ' aanpassing' : ' aanpassingen') + ' t.o.v. Odoo';
+  chip.className = 'pl-chip' + (changes ? ' on' : '');
+  document.getElementById('pl-reset').disabled = (changes === 0) || !plCanEdit();
+  document.getElementById('pl-add-rubriek').disabled = !plCanEdit();
+
+  document.getElementById('pl-help').innerHTML = plCanEdit()
+    ? 'Met <b>i</b> zie je welke codereeks Odoo voor een rubriek gebruikt en welke rekeningen er nu in vallen. ' +
+      'Verplaatsen kan door een rekening te slepen of met <b>⇄</b> op de regel. Bedragen zoals het Odoo-rapport ze toont.'
+    : 'Aanpassen van de indeling kan nu niet — er is geen database gekoppeld. Het dashboard toont de indeling zoals die in Odoo staat.';
+}
+
+// --- info-popover ---
+function hidePlPop(){
+  document.getElementById('pl-pop').style.display = 'none';
+  plPopFor = null;
+}
+function showPlInfo(btn, node){
+  const pop = document.getElementById('pl-pop');
+  if (plPopFor === node.id){ hidePlPop(); return; }
+  const accts = plAccountsIn(node.id).slice().sort((a, b) => a.code.localeCompare(b.code));
+  let html = '<h5>' + node.name + '</h5>';
+  if (node.formula) html += 'Codereeks in Odoo<br><span class="frm">' + node.formula + '</span>';
+  else if (node.custom) html += '<span class="frm">eigen rubriek — niet uit Odoo</span>';
+  else if (node.unallocated) html += '<span class="frm">valt in geen enkele codereeks van het rapport</span>';
+  html += accts.length
+    ? '<ul>' + accts.map(a => '<li><span class="c">' + a.code + '</span> ' + a.name +
+        (a.rubriek !== a.default_rubriek ? ' <span class="c">(hierheen verplaatst)</span>' : '') +
+        '</li>').join('') + '</ul>'
+    : '<div class="c">Geen rekeningen in deze rubriek in de gekozen periode.</div>';
+  pop.innerHTML = html;
+  pop.style.display = 'block';
+  const b = btn.getBoundingClientRect();
+  pop.style.left = Math.max(8, Math.min(b.left, window.innerWidth - pop.offsetWidth - 12)) + 'px';
+  pop.style.top = Math.min(b.bottom + 6, window.innerHeight - pop.offsetHeight - 12) + 'px';
+  plPopFor = node.id;
+}
+document.addEventListener('click', (e) => {
+  const pop = document.getElementById('pl-pop');
+  if (pop && pop.style.display === 'block' && !pop.contains(e.target)
+      && !(e.target.classList && e.target.classList.contains('pl-iconbtn'))) hidePlPop();
+});
+
+// --- wijzigen ---
+function plBanner(kind, text){
+  const el = document.getElementById('pl-banner-' + kind);
+  el.textContent = text;
+  el.style.display = text ? 'block' : 'none';
+}
+
+async function plPost(url, body, method){
+  const resp = await fetch(url, {
+    method: method || 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!resp.ok){
+    let detail = 'Opslaan mislukt (' + resp.status + ')';
+    try { const j = await resp.json(); if (j.detail) detail = j.detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return resp.json();
+}
+
+async function movePlAccount(code, rubriek){
+  const acct = plData.accounts.find(a => a.code === code);
+  if (!acct || acct.rubriek === rubriek) return;
+  const previous = acct.rubriek;
+  // meteen tonen, daarna pas opslaan — bij een fout draaien we het terug
+  acct.rubriek = rubriek;
+  plOpen.add(rubriek);
+  renderPl();
+  try {
+    plBanner('error', '');
+    await plPost('/api/pl/account', {
+      code: code, rubriek: (rubriek === acct.default_rubriek ? '' : rubriek),
+    });
+  } catch (err) {
+    acct.rubriek = previous;
+    renderPl();
+    plBanner('error', 'De verplaatsing is niet bewaard: ' + err.message);
+  }
+}
+
+function openPlMoveDialog(a){
+  plMoveCode = a.code;
+  document.getElementById('pl-move-what').textContent = a.code + ' · ' + a.name;
+  const sel = document.getElementById('pl-move-target');
+  sel.innerHTML = plData.rubriek_options.map(o =>
+    '<option value="' + o.id + '"' + (o.id === a.rubriek ? ' selected' : '') + '>' + o.name + '</option>'
+  ).join('');
+  document.getElementById('pl-move-dialog').showModal();
+}
+function submitPlMove(){
+  const target = document.getElementById('pl-move-target').value;
+  document.getElementById('pl-move-dialog').close();
+  if (plMoveCode) movePlAccount(plMoveCode, target);
+}
+
+function openPlRubriekDialog(){
+  const sel = document.getElementById('pl-rubriek-parent');
+  sel.innerHTML = plData.group_options.map(o =>
+    '<option value="' + o.id + '">' + o.name + '</option>').join('');
+  document.getElementById('pl-rubriek-naam').value = '';
+  document.getElementById('pl-rubriek-dialog').showModal();
+}
+async function submitPlRubriek(){
+  const name = document.getElementById('pl-rubriek-naam').value.trim();
+  const parent = document.getElementById('pl-rubriek-parent').value;
+  document.getElementById('pl-rubriek-dialog').close();
+  if (!name) return;
+  try {
+    plBanner('error', '');
+    await plPost('/api/pl/rubriek', { name: name, parent: parent });
+    await loadPlData(false);
+  } catch (err) {
+    plBanner('error', 'De rubriek is niet aangemaakt: ' + err.message);
+  }
+}
+
+async function deletePlRubriek(node){
+  if (!confirm('Rubriek "' + node.name + '" verwijderen? De rekeningen die erin staan gaan '
+             + 'terug naar de rubriek die Odoo ze geeft.')) return;
+  try {
+    plBanner('error', '');
+    await plPost('/api/pl/rubriek/' + encodeURIComponent(node.id), null, 'DELETE');
+    await loadPlData(false);
+  } catch (err) {
+    plBanner('error', 'De rubriek is niet verwijderd: ' + err.message);
+  }
+}
+
+async function resetPlLayout(){
+  if (!confirm('Alle eigen aanpassingen ongedaan maken en terug naar de indeling van het '
+             + 'Odoo-rapport?')) return;
+  try {
+    plBanner('error', '');
+    await plPost('/api/pl/reset', null);
+    await loadPlData(false);
+  } catch (err) {
+    plBanner('error', 'Terugzetten is niet gelukt: ' + err.message);
+  }
+}
+
+function setPlMode(index){ plModeIndex = parseInt(index, 10) || 0; renderPl(); }
+
+function setPlOpenAll(open){
+  plOpen = new Set();
+  if (open){
+    const walk = (nodes) => nodes.forEach(n => { plOpen.add(n.id); walk(n.children || []); });
+    walk(plData.tree);
+  }
+  renderPl();
+}
+
+function plDefaultOpen(){
+  const open = new Set();
+  plData.tree.forEach(n => {
+    open.add(n.id);
+    (n.children || []).forEach(c => { if (c.kind === 'group') open.add(c.id); });
+  });
+  return open;
+}
+
+async function loadPlData(forceRefresh){
+  try {
+    const resp = await fetch('/api/pl' + periodQuery(forceRefresh));
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    const firstLoad = !plLoaded;
+    plData = data;
+    plLoaded = true;
+    plIndexTree();
+    plBuildModes();
+    if (firstLoad || !plOpen.size) plOpen = plDefaultOpen();
+    plBanner('error', '');
+    const warnings = [];
+    if (data.stale_error) warnings.push('Odoo gaf een fout; hieronder staan de laatst bekende cijfers.');
+    if (data.warning) warnings.push(data.warning);
+    if (data.layout && data.layout.message) warnings.push(data.layout.message);
+    if (data.layout && data.layout.dangling && data.layout.dangling.length){
+      warnings.push('Deze rekeningen stonden in een rubriek die niet meer bestaat en volgen nu weer Odoo: '
+                    + data.layout.dangling.join(', ') + '.');
+    }
+    plBanner('warn', warnings.join(' '));
+    document.getElementById('pl-source-note').textContent =
+      'Rubrieken uit het Odoo-rapport “' + data.report.name + '”, periode ' + data.period.label_text +
+      '. De indeling is hier aan te passen; de bedragen komen elke keer vers uit Odoo.';
+    document.getElementById('pl-last-updated').textContent =
+      'Bijgewerkt: ' + new Date().toLocaleString('nl-NL');
+    renderPl();
+  } catch (err) {
+    plBanner('error', 'Kon de winst- en verliesrekening niet laden: ' + err.message);
+    document.getElementById('pl-body').innerHTML =
+      '<tr><td class="pl-l"><span class="skeleton">Geen gegevens</span></td></tr>';
+  }
 }
 
 syncPeriodControls();

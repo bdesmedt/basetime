@@ -81,8 +81,14 @@ class OdooClient:
         domain: list,
         fields: list[str],
         groupby: list[str],
+        lazy: bool = True,
     ) -> list[dict]:
-        return self.execute_kw(model, "read_group", [domain, fields, groupby])
+        """lazy=True is Odoo's standaard: bij meerdere groeperingen wordt alleen op de
+        EERSTE gegroepeerd en krijg je de rest niet uitgesplitst terug. Met lazy=False
+        geeft Odoo elke combinatie apart terug — nodig als je bijvoorbeeld saldo per
+        rekening én per maand in één query wilt."""
+        kwargs = {} if lazy else {"lazy": False}
+        return self.execute_kw(model, "read_group", [domain, fields, groupby], kwargs)
 
 
 def get_client() -> OdooClient:

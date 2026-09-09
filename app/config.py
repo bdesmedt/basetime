@@ -47,6 +47,29 @@ ODOO_API_KEY = _get_env("ODOO_API_KEY", required=True)
 DASHBOARD_USER = _get_env("DASHBOARD_USER", required=True)
 DASHBOARD_PASSWORD = _get_env("DASHBOARD_PASSWORD", required=True)
 
+# --- Database (alleen voor de eigen W&V-indeling) ---------------------------
+# Railway vult DATABASE_URL automatisch zodra je een Postgres-database aan het project
+# toevoegt en die aan deze service koppelt. Blijft de variabele leeg, dan werkt het
+# dashboard gewoon door: de W&V-tab toont dan de indeling zoals die in Odoo staat en
+# meldt erbij dat wijzigingen niet bewaard kunnen worden.
+DATABASE_URL = _get_env("DATABASE_URL", "")
+
+# Hoe lang (seconden) op de database gewacht wordt voordat we het opgeven en terugvallen
+# op de Odoo-indeling. Kort houden: een trage database mag de pagina niet ophouden.
+DATABASE_TIMEOUT = int(_get_env("DATABASE_TIMEOUT", "10"))
+
+# --- Winst-en-verliesrapport in Odoo ----------------------------------------
+# Het rapport (account.report) dat de rubrieksindeling van de W&V-tab bepaalt. Bij
+# Basetime is dat id 25, "Profit and loss report V2" — de eigen kopie van Odoo's
+# standaard W&V-rapport. Zie de W&V-tab: het rapport is puur het startpunt; afwijkingen
+# worden in de database bewaard.
+PL_REPORT_ID = int(_get_env("PL_REPORT_ID", "25"))
+
+# De regel van dat rapport die het eindresultaat berekent. Alles waar deze regel (direct
+# of indirect) op steunt, vormt de W&V-boom; losse memoblokken onderaan het rapport
+# (bij Basetime: Stock, marge Locator One/Two) vallen daarmee vanzelf buiten de boom.
+PL_RESULT_LINE_CODE = _get_env("PL_RESULT_LINE_CODE", "NL_RESNB_COPY")
+
 # --- Cache ------------------------------------------------------------------
 # Hoe lang (in seconden) een opgehaalde KPI-set warm blijft voordat een nieuwe
 # paginabezoek een verse Odoo-query triggert. 900s = 15 minuten. Zet lager als je

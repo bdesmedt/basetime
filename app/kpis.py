@@ -12,11 +12,12 @@ ISO-startdatum van elke groep — dat werkt onafhankelijk van taal/locale.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from . import config
+from . import config, db
 from .odoo_client import OdooClient, get_client
 
 DUTCH_MONTH_ABBR = {
@@ -1524,4 +1525,504 @@ def build_dashboard_payload(
             ),
             "cashflow": cashflow_mtd,
         } if has_current else None,
+    }
+
+
+# --- Winst- en verliesrekening tot op grootboekniveau -----------------------
+#
+# De rubrieksindeling komt uit een W&V-rapport in Odoo (account.report), bij Basetime
+# "Profit and loss report V2". Dat rapport koppelt rubrieken aan CODEREEKSEN: de regel
+# "Sales & Marketing Cost" heeft als formule "45", oftewel elke rekening waarvan de code
+# met 45 begint. Daarin kun je geen losse rekening verplaatsen zonder de reeks te breken.
+#
+# Daarom vertalen we de reeksen hier één keer naar een concrete indeling
+# rekening -> rubriek (langste reeks wint, precies zoals Odoo zelf matcht) en leggen we in
+# de database alleen vast wat de gebruiker daarvan afwijkt (zie db.py).
+#
+# Rekeningen die in geen enkele reeks vallen verdwijnen in Odoo stilzwijgend uit het
+# rapport. Hier komen ze in een zichtbare rubriek "Niet ingedeeld" te staan, buiten de
+# resultaatberekening, zodat het dashboard exact op Odoo aansluit én je meteen ziet dat
+# er iets buiten de W&V valt.
+
+UNALLOCATED_ID = "unallocated"
+UNALLOCATED_NAME = "Niet ingedeeld"
+
+_FORMULA_TOKEN_RE = re.compile(r"[+\-]|[A-Za-z0-9_.]+")
+
+
+def _signed_tokens(formula: str | None) -> list[tuple[str, int]]:
+    """Splitst een Odoo-formule in (token, teken). "- 800300 - 800310" wordt
+    [("800300", -1), ("800310", -1)], "425 + 430" wordt [("425", 1), ("430", 1)]."""
+    tokens: list[tuple[str, int]] = []
+    sign = 1
+    for tok in _FORMULA_TOKEN_RE.findall(formula or ""):
+        if tok == "+":
+            sign = 1
+        elif tok == "-":
+            sign = -1
+        else:
+            tokens.append((tok, sign))
+            sign = 1
+    return tokens
+
+
+def _account_code_prefixes(formula: str | None) -> list[tuple[str, int]]:
+    """De codereeksen uit een `account_codes`-formule. Een minteken draait het saldo om
+    (omzet staat in Odoo als credit, dus negatief, en hoort positief in de W&V)."""
+    return [(tok, sign) for tok, sign in _signed_tokens(formula) if tok.isdigit()]
+
+
+def _aggregation_refs(formula: str | None) -> list[tuple[str, int]]:
+    """De regelcodes uit een `aggregation`-formule, bv. "NL_NET_COPY.balance -
+    NL_COGS_COPY.balance" wordt [("NL_NET_COPY", 1), ("NL_COGS_COPY", -1)]."""
+    refs = []
+    for tok, sign in _signed_tokens(formula):
+        code = tok.split(".")[0]
+        if code and not code.isdigit():
+            refs.append((code, sign))
+    return refs
+
+
+def fetch_pl_structure(client: OdooClient) -> dict:
+    """Leest het W&V-rapport uit Odoo en zet het om in een boom van rubrieken.
+
+    Per regel (account.report.line) hoort één formule (account.report.expression):
+      - engine `account_codes`  -> een RUBRIEK: hier vallen grootboekrekeningen in;
+      - engine `aggregation`    -> een optelregel over andere regels;
+      - iets anders / niets     -> een opmaakregel (streepje, kopje) zonder bedrag.
+
+    Regels MET onderliggende regels worden altijd als groep opgeteld uit hun kinderen,
+    ook als er een aggregation-formule bij staat. Dat is bewust: zou je de formule van
+    Odoo letterlijk volgen, dan zou een zelf toegevoegde rubriek niet in het totaal
+    meetellen (die staat immers niet in de formule van Odoo). De TEKENS uit die formule
+    gebruiken we wel — zo blijft "Bruto verkoopresultaat = netto-omzet minus kostprijs"
+    kloppen, en telt een nieuwe rubriek gewoon met een plus mee."""
+    report_id = config.PL_REPORT_ID
+    reports = client.search_read("account.report", [["id", "=", report_id]], ["id", "name"])
+    if not reports:
+        available = client.search_read("account.report", [], ["id", "name"], limit=25)
+        namen = ", ".join(f"{r['id']}={r['name']}" for r in available)
+        raise RuntimeError(
+            f"Odoo-rapport met id {report_id} bestaat niet. Zet PL_REPORT_ID op het juiste "
+            f"rapport. Beschikbare rapporten: {namen}"
+        )
+
+    lines = client.search_read(
+        "account.report.line",
+        [["report_id", "=", report_id]],
+        ["id", "name", "code", "parent_id", "sequence"],
+        order="sequence asc, id asc",
+    )
+    exprs = client.search_read(
+        "account.report.expression",
+        [["report_line_id.report_id", "=", report_id]],
+        ["report_line_id", "label", "engine", "formula"],
+    )
+
+    expr_by_line: dict[int, dict] = {}
+    for e in exprs:
+        if e.get("label") != "balance":
+            continue
+        ref = e.get("report_line_id")
+        if ref:
+            expr_by_line[ref[0]] = e
+
+    nodes: dict[int, dict] = {}
+    children: dict[int, list[int]] = {}
+    by_code: dict[str, int] = {}
+    order: list[int] = []
+    for line in lines:
+        lid = line["id"]
+        parent = line["parent_id"][0] if line.get("parent_id") else None
+        nodes[lid] = {
+            "id": lid,
+            "name": line.get("name") or "",
+            "code": line.get("code") or None,
+            "parent": parent,
+            "sequence": line.get("sequence") or 0,
+        }
+        order.append(lid)
+        if parent is not None:
+            children.setdefault(parent, []).append(lid)
+        if line.get("code"):
+            by_code[line["code"]] = lid
+
+    for lid, node in nodes.items():
+        expr = expr_by_line.get(lid) or {}
+        engine = expr.get("engine")
+        formula = (expr.get("formula") or "").strip()
+        kids = children.get(lid) or []
+        if kids:
+            node["kind"] = "group"
+            signs: dict[int, int] = {}
+            if engine == "aggregation":
+                for code, sign in _aggregation_refs(formula):
+                    ref_id = by_code.get(code)
+                    if ref_id is not None:
+                        signs[ref_id] = sign
+            node["signs"] = {k: signs.get(k, 1) for k in kids}
+        elif engine == "account_codes":
+            node["kind"] = "rubriek"
+            node["prefixes"] = _account_code_prefixes(formula)
+            node["formula"] = formula
+        elif engine == "aggregation":
+            node["kind"] = "calc"
+            node["refs"] = [
+                (by_code[c], s) for c, s in _aggregation_refs(formula) if c in by_code
+            ]
+            node["formula"] = formula
+        else:
+            node["kind"] = "spacer"
+
+    def _reach(start: int) -> set[int]:
+        seen: set[int] = set()
+        stack = [start]
+        while stack:
+            lid = stack.pop()
+            if lid in seen or lid not in nodes:
+                continue
+            seen.add(lid)
+            node = nodes[lid]
+            if node["kind"] == "group":
+                stack.extend(children.get(lid) or [])
+            elif node["kind"] == "calc":
+                stack.extend(ref for ref, _ in node["refs"])
+        return seen
+
+    warning = None
+    root_id = by_code.get(config.PL_RESULT_LINE_CODE)
+    if root_id is None:
+        # Terugval: neem de optelregel die (direct of indirect) de meeste andere regels
+        # gebruikt. Bij Basetime is dat "Result After Taxes"; de losse memoblokken
+        # onderaan het rapport hangen maar aan een paar regels en vallen dus af.
+        candidates = [lid for lid, n in nodes.items() if n["kind"] == "calc"]
+        root_id = max(candidates, key=lambda lid: len(_reach(lid)), default=None)
+        warning = (
+            f"Rapportregel met code {config.PL_RESULT_LINE_CODE} niet gevonden; "
+            f"de W&V-boom is afgeleid van "
+            f"{nodes[root_id]['name'] if root_id else 'niets'}. "
+            f"Zet PL_RESULT_LINE_CODE op de code van de eindresultaatregel."
+        )
+    if root_id is None:
+        raise RuntimeError(
+            f"In rapport {report_id} staat geen enkele optelregel; er valt geen "
+            f"W&V-boom uit af te leiden."
+        )
+
+    reachable = _reach(root_id)
+    seq = {lid: i for i, lid in enumerate(order)}
+    for lid in nodes:
+        children.setdefault(lid, [])
+        children[lid].sort(key=lambda k: seq.get(k, 0))
+
+    return {
+        "report": {"id": report_id, "name": reports[0]["name"]},
+        "nodes": nodes,
+        "children": children,
+        "by_code": by_code,
+        "order": order,
+        "reachable": reachable,
+        "root_id": root_id,
+        "warning": warning,
+    }
+
+
+def _prefix_classifier(structure: dict):
+    """Bouwt de functie die een rekeningcode aan een rubriek koppelt: langste codereeks
+    wint, net als in Odoo. Gelijke lengte? Dan wint de regel die in het rapport het
+    eerst staat, zodat de uitkomst niet van toeval afhangt."""
+    nodes, reachable, order = structure["nodes"], structure["reachable"], structure["order"]
+    seq = {lid: i for i, lid in enumerate(order)}
+    entries: list[tuple[int, int, str, int, int]] = []
+    for lid in sorted(reachable, key=lambda k: seq.get(k, 0)):
+        node = nodes[lid]
+        if node["kind"] != "rubriek":
+            continue
+        for prefix, sign in node.get("prefixes", []):
+            entries.append((-len(prefix), seq.get(lid, 0), prefix, sign, lid))
+    entries.sort()
+
+    def classify(code: str) -> tuple[str, int]:
+        for _, _, prefix, sign, lid in entries:
+            if code.startswith(prefix):
+                return str(lid), sign
+        return UNALLOCATED_ID, 1
+
+    return classify
+
+
+def _pl_line_domain(start: date, end: date) -> list:
+    # include_initial_balance is in Odoo True voor balansrekeningen en False voor
+    # resultaatrekeningen; dit is dus "alleen W&V-rekeningen". Getoetst tegen Odoo's
+    # eigen W&V-rapport: hiermee sluit de netto-omzet exact aan op "Total Net Sales".
+    return [
+        ["parent_state", "=", "posted"],
+        ["date", ">=", _iso(start)],
+        ["date", "<", _iso(end)],
+        ["account_id.include_initial_balance", "=", False],
+    ]
+
+
+def _pl_balances_per_month(
+    client: OdooClient, windows: list[tuple[date, date]]
+) -> dict[int, dict[str, float]]:
+    """Terugvalroute: één query per maand. Trager, maar werkt altijd."""
+    out: dict[int, dict[str, float]] = {}
+    for start, end in windows:
+        rows = client.read_group(
+            "account.move.line", _pl_line_domain(start, end), ["balance:sum"], ["account_id"]
+        )
+        for row in rows:
+            account = row.get("account_id")
+            if not account:
+                continue
+            out.setdefault(account[0], {})[_iso(start)] = round(row.get("balance") or 0.0, 2)
+    return out
+
+
+def fetch_pl_balances(
+    client: OdooClient, windows: list[tuple[date, date]]
+) -> dict[int, dict[str, float]]:
+    """Grootboeksaldi per rekening per maand: {rekening-id: {"2026-01": bedrag, ...}}.
+
+    In één query, door Odoo met lazy=False op rekening én maand te laten groeperen.
+    Geeft Odoo geen bruikbare maandgrenzen terug, dan valt hij terug op een query per
+    maand — dan is het langzamer, maar nooit stilzwijgend leeg."""
+    if not windows:
+        return {}
+    keys = {_iso(start) for start, _ in windows}
+    start, end = windows[0][0], windows[-1][1]
+    try:
+        rows = client.read_group(
+            "account.move.line",
+            _pl_line_domain(start, end),
+            ["balance:sum"],
+            ["account_id", "date:month"],
+            lazy=False,
+        )
+    except Exception:
+        return _pl_balances_per_month(client, windows)
+
+    out: dict[int, dict[str, float]] = {}
+    matched = False
+    for row in rows:
+        account = row.get("account_id")
+        rng = (row.get("__range") or {}).get("date:month") or {}
+        month_key = rng.get("from")
+        if not account or not month_key or month_key not in keys:
+            continue
+        matched = True
+        per_month = out.setdefault(account[0], {})
+        per_month[month_key] = round(per_month.get(month_key, 0.0) + (row.get("balance") or 0.0), 2)
+    if rows and not matched:
+        return _pl_balances_per_month(client, windows)
+    return out
+
+
+def _previous_year_windows(windows: list[tuple[date, date]]) -> list[tuple[date, date]]:
+    """Dezelfde kalendermaanden, één jaar eerder. Alleen voor VOLLEDIGE maanden — de
+    lopende maand vergelijken met een volle maand vorig jaar zou onzin zijn."""
+    return [(_add_months(start, -12), _add_months(start, -11)) for start, _ in windows]
+
+
+def _rubriek_paths(structure: dict) -> dict[str, str]:
+    """Voor elke rubriek het pad erheen ("Bedrijfskosten › Personeelskosten › Lonen"),
+    zodat de keuzelijst bij 'verplaats naar' leesbaar blijft."""
+    nodes, children, reachable = structure["nodes"], structure["children"], structure["reachable"]
+    paths: dict[str, str] = {}
+
+    def walk(lid: int, prefix: list[str]) -> None:
+        node = nodes[lid]
+        trail = prefix + [node["name"]]
+        if node["kind"] == "rubriek":
+            paths[str(lid)] = " › ".join(trail)
+        for kid in children.get(lid, []):
+            if kid in reachable:
+                walk(kid, trail)
+
+    for lid in structure["order"]:
+        if lid in reachable and nodes[lid].get("parent") is None:
+            walk(lid, [])
+    return paths
+
+
+def build_pl_payload(
+    months: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    layout: dict | None = None,
+) -> dict:
+    """Alles wat de W&V-tab nodig heeft: de rubrieksboom, de saldi per rekening per maand
+    en de eigen indeling. De optelling zelf gebeurt in de browser, zodat het verslepen van
+    een rekening meteen zichtbaar is zonder opnieuw naar Odoo te hoeven."""
+    client = get_client()
+    windows, period_meta = resolve_windows(months, date_from, date_to)
+    all_windows, has_current = windows_including_current_month(windows)
+
+    structure = fetch_pl_structure(client)
+    classify = _prefix_classifier(structure)
+
+    balances = fetch_pl_balances(client, all_windows)
+    prev_windows = _previous_year_windows(windows)
+    prev_balances = fetch_pl_balances(client, prev_windows)
+
+    account_ids = sorted(set(balances) | set(prev_balances))
+    info_rows = (
+        client.search_read("account.account", [["id", "in", account_ids]], ["id", "code", "name"])
+        if account_ids else []
+    )
+
+    if layout is None:
+        layout = db.load_layout()
+    overrides = dict(layout.get("overrides") or {})
+    custom = list(layout.get("custom") or [])
+
+    nodes, children, reachable = structure["nodes"], structure["children"], structure["reachable"]
+    valid_rubriek_ids = {
+        str(lid) for lid in reachable if nodes[lid]["kind"] == "rubriek"
+    } | {UNALLOCATED_ID} | {c["id"] for c in custom}
+
+    month_keys = [_iso(start) for start, _ in all_windows]
+    prev_keys = [_iso(start) for start, _ in prev_windows]
+
+    accounts = []
+    dangling: list[str] = []
+    for row in info_rows:
+        code = row.get("code") or ""
+        if not code:
+            continue
+        default_rubriek, sign = classify(code)
+        rubriek = overrides.get(code, default_rubriek)
+        if rubriek not in valid_rubriek_ids:
+            # De rubriek waar deze rekening naartoe was verplaatst bestaat niet meer
+            # (rapport gewijzigd in Odoo). Terug naar de Odoo-indeling, en melden.
+            dangling.append(code)
+            rubriek = default_rubriek
+        per_month = balances.get(row["id"]) or {}
+        prev_month = prev_balances.get(row["id"]) or {}
+        accounts.append({
+            "code": code,
+            "name": row.get("name") or "",
+            "rubriek": rubriek,
+            "default_rubriek": default_rubriek,
+            "sign": sign,
+            "m": {k: round(per_month[k] * sign, 2) for k in month_keys if per_month.get(k)},
+            "prev": round(sum(prev_month.get(k, 0.0) for k in prev_keys) * sign, 2),
+        })
+    accounts.sort(key=lambda a: a["code"])
+
+    # --- boom voor de interface ---
+    custom_by_parent: dict[str, list[dict]] = {}
+    for entry in custom:
+        custom_by_parent.setdefault(str(entry.get("parent")), []).append(entry)
+    used_custom: set[str] = set()
+
+    def serialise(lid: int) -> dict:
+        node = nodes[lid]
+        out = {"id": str(lid), "name": node["name"], "kind": node["kind"]}
+        if node["kind"] == "group":
+            kids = [serialise(k) for k in children.get(lid, []) if k in reachable]
+            signs = {str(k): node["signs"].get(k, 1) for k in children.get(lid, []) if k in reachable}
+            for entry in custom_by_parent.get(str(lid), []):
+                kids.append({
+                    "id": entry["id"], "name": entry["name"], "kind": "rubriek",
+                    "formula": "", "custom": True,
+                })
+                signs[entry["id"]] = 1
+                used_custom.add(entry["id"])
+            out["children"] = kids
+            out["signs"] = signs
+        elif node["kind"] == "rubriek":
+            out["formula"] = node.get("formula") or ""
+        elif node["kind"] == "calc":
+            out["refs"] = [{"id": str(r), "sign": s} for r, s in node["refs"] if r in reachable]
+        return out
+
+    tree = [
+        serialise(lid)
+        for lid in structure["order"]
+        if lid in reachable and nodes[lid].get("parent") is None
+    ]
+
+    # Zelf toegevoegde rubrieken waarvan de bovenliggende groep niet (meer) bestaat,
+    # komen los onderaan te staan in plaats van te verdwijnen.
+    orphans = [c for c in custom if c["id"] not in used_custom]
+    for entry in orphans:
+        tree.append({"id": entry["id"], "name": entry["name"], "kind": "rubriek",
+                     "formula": "", "custom": True, "orphan": True})
+
+    tree.append({
+        "id": UNALLOCATED_ID, "name": UNALLOCATED_NAME, "kind": "rubriek",
+        "formula": "", "unallocated": True,
+    })
+
+    paths = _rubriek_paths(structure)
+    for entry in custom:
+        parent = nodes.get(int(entry["parent"])) if str(entry["parent"]).isdigit() else None
+        paths[entry["id"]] = (
+            f"{parent['name']} › {entry['name']}" if parent else entry["name"]
+        )
+    paths[UNALLOCATED_ID] = UNALLOCATED_NAME
+
+    group_options = [
+        {"id": str(lid), "name": paths.get(str(lid)) or nodes[lid]["name"]}
+        for lid in structure["order"]
+        if lid in reachable and nodes[lid]["kind"] == "group"
+    ]
+    for opt in group_options:
+        lid = int(opt["id"])
+        trail = []
+        cur = lid
+        while cur is not None and cur in nodes:
+            trail.append(nodes[cur]["name"])
+            cur = nodes[cur].get("parent")
+        opt["name"] = " › ".join(reversed(trail))
+
+    labels = month_labels_for(all_windows)
+    month_meta = [
+        {"key": key, "label": labels[i], "partial": bool(has_current and i == len(all_windows) - 1)}
+        for i, key in enumerate(month_keys)
+    ]
+
+    return {
+        "period": period_meta,
+        "report": structure["report"],
+        "months": month_meta,
+        "compare": {
+            "label": f"{period_meta['from'][:4]} → {prev_keys[0][:4]}" if prev_keys else "",
+            "from": prev_keys[0] if prev_keys else None,
+            "to": prev_keys[-1] if prev_keys else None,
+            "months": len(prev_keys),
+        },
+        "tree": tree,
+        "accounts": accounts,
+        "rubriek_options": [
+            {"id": rid, "name": paths.get(rid, rid)}
+            for rid in sorted(valid_rubriek_ids, key=lambda r: paths.get(r, r))
+        ],
+        "group_options": group_options,
+        "unallocated_id": UNALLOCATED_ID,
+        "result_line_id": str(structure["root_id"]),
+        "layout": {
+            "storage": layout.get("storage", "geen"),
+            "error": layout.get("error"),
+            "message": layout.get("message"),
+            "override_count": len(overrides),
+            "custom_count": len(custom),
+            "dangling": dangling,
+        },
+        "warning": structure.get("warning"),
+        "current_month": current_month_progress() if has_current else None,
+    }
+
+
+def layout_summary() -> dict:
+    """Korte samenvatting van de opgeslagen indeling, voor het antwoord op een wijziging."""
+    layout = db.load_layout()
+    return {
+        "storage": layout.get("storage", "geen"),
+        "error": layout.get("error"),
+        "message": layout.get("message"),
+        "override_count": len(layout.get("overrides") or {}),
+        "custom_count": len(layout.get("custom") or []),
     }

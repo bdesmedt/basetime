@@ -6,6 +6,9 @@ intake, recurring/subscription-omzet, brutomarge, inkoopbacklog, gewogen pipelin
 (sinds deze versie) ouderdomsanalyse debiteuren/crediteuren, klantconcentratie in de
 gefactureerde omzet, en de benodigde break-evenomzet per maand.
 
+Vier tabbladen: **Overzicht** (de KPI's), **Winst & verlies** (de W&V tot op
+grootboekniveau, met een aanpasbare rubrieksindeling), **Voorraad** en **Actieplan**.
+
 - **Backend**: Python (FastAPI), praat met Odoo via de officiële externe XML-RPC-API.
 - **Frontend**: één HTML-pagina (in `app/templates/dashboard.html`), haalt de cijfers op
   via `/api/kpis` en tekent de tabellen/grafieken in de browser — geen build-stap nodig.
@@ -13,6 +16,9 @@ gefactureerde omzet, en de benodigde break-evenomzet per maand.
 - **Cache**: opgehaalde cijfers blijven 15 minuten warm (instelbaar), zodat niet elke
   paginabezoek meteen Odoo belast. Een "Vernieuwen"-knop op het dashboard forceert een
   verse ophaal-actie.
+- **Database**: alleen nodig voor de eigen rubrieksindeling van de W&V-tab (Postgres op
+  Railway, zie stap 4b). Alle cijfers komen live uit Odoo; er wordt niets van Odoo in de
+  database gekopieerd.
 
 Dit project is voortgekomen uit een concept-dashboard (los HTML-bestand met een
 momentopname) dat is besproken in het Claude-project "Basetime" — zie
@@ -88,13 +94,35 @@ In het Railway-project: tabblad **Variables** → voeg deze toe (zie ook `.env.e
 | `DASHBOARD_PASSWORD` | een sterk wachtwoord dat jij kiest |
 
 Optioneel (staan anders op een verstandige standaardwaarde — zie `app/config.py`):
-`CACHE_TTL_SECONDS`, `MONTHS_LOOKBACK`, `TOP_PIPELINE_DEALS`, `TOP_CUSTOMERS_N`,
-`CONCENTRATION_MONTHS_LOOKBACK`, `BANK_ACCOUNT_CODES`, `MAIN_OPERATING_BANK_CODE`,
-`CREDIT_LIMIT`, `FIXED_MONTHLY_COSTS`, `SUBSCRIPTION_ACCOUNT_CODES`.
+`CACHE_TTL_SECONDS`, `MONTHS_LOOKBACK`, `MAX_PERIOD_MONTHS`, `TOP_PIPELINE_DEALS`,
+`TOP_CUSTOMERS_N`, `TOP_STOCK_PRODUCTS_N`, `CONCENTRATION_MONTHS_LOOKBACK`,
+`BANK_ACCOUNT_CODES`, `MAIN_OPERATING_BANK_CODE`, `CREDIT_LIMIT`,
+`FIXED_MONTHLY_COSTS`, `SUBSCRIPTION_ACCOUNT_CODES`,
+`REVENUE_EXCLUDED_ACCOUNT_CODES`, `DEFERRED_REVENUE_ACCOUNT_CODE`,
+`DEFERRED_PRODUCT_NAME_PREFIXES`, `PL_REPORT_ID`, `PL_RESULT_LINE_CODE`.
 
 Na het opslaan start Railway automatisch een nieuwe deployment. Onder **Settings →
 Networking** kun je een publieke URL genereren (`*.up.railway.app`) of een eigen domein
 koppelen.
+
+## Stap 4b — Database toevoegen (alleen voor de W&V-tab)
+
+De tab **Winst & verlies** haalt zijn rubrieksindeling uit het Odoo-rapport
+"Profit and loss report V2", maar je kunt die indeling in het dashboard zelf aanpassen:
+een grootboekrekening naar een andere rubriek slepen, of een eigen rubriek toevoegen.
+Die afwijkingen moeten een nieuwe deploy overleven, en daarvoor is een kleine database
+nodig.
+
+1. In het Railway-project: **New → Database → Add PostgreSQL**.
+2. Ga naar de service van het dashboard → **Variables** → **Add Reference** en kies de
+   `DATABASE_URL` van de zojuist toegevoegde Postgres-service.
+3. Klaar — de twee benodigde tabellen maakt het dashboard bij het eerste gebruik zelf
+   aan. Kosten: een paar euro per maand.
+
+**Zonder database werkt het dashboard gewoon door.** De W&V-tab toont dan de indeling
+zoals die in Odoo staat, met de melding erbij dat wijzigingen niet bewaard kunnen
+worden; de knoppen om te verplaatsen staan dan uit. Ligt de database er tijdelijk uit,
+dan gebeurt hetzelfde — de pagina blijft werken.
 
 ## Stap 5 — Testen
 
@@ -134,12 +162,31 @@ pytest
 - **Kredietlimiet of vaste maandlasten veranderen**: `CREDIT_LIMIT` /
   `FIXED_MONTHLY_COSTS` in Railway → Variables.
 - **Andere periode in de maandgrafieken**: `MONTHS_LOOKBACK` (aantal volledige maanden).
+- **Indeling van de W&V wijzigen**: dat doe je in het dashboard zelf, op de tab
+  Winst & verlies. Sleep een grootboekrekening naar een andere rubriek of gebruik het
+  knopje `⇄` op de regel; met `+ Rubriek` maak je een eigen rubriek aan en met
+  "Terug naar Odoo" zet je alles terug zoals het Odoo-rapport het berekent. Het knopje
+  **i** achter een rubriek laat zien welke codereeks Odoo gebruikt en welke rekeningen
+  er nu in vallen.
+- **Ander W&V-rapport als basis**: `PL_REPORT_ID` (het id van het `account.report`-record
+  in Odoo) en `PL_RESULT_LINE_CODE` (de code van de regel die het eindresultaat
+  berekent). Alles waar die regel op steunt vormt de W&V-boom; losse memoblokken
+  onderaan zo'n rapport vallen daarmee vanzelf buiten beeld.
 - **Cijfers kloppen niet meer** (bv. na een reorganisatie van het rekeningschema in
   Odoo): begin met `app/config.py` — daar staan alle Basetime-specifieke aannames met
   toelichting waar ze vandaan komen.
 
 ## Bekende beperkingen (zie ook het KPI-voorstel-document in het Claude-project)
 
+- **Rekeningen die in geen enkele codereeks van het W&V-rapport vallen** komen op de
+  W&V-tab in de rubriek **Niet ingedeeld** terecht, buiten de resultaatberekening. Dat
+  is precies wat Odoo zelf ook doet — Odoo laat ze alleen stilzwijgend weg. Bij Basetime
+  gaat het (augustus 2026) om rekening 481000 "Depreciation Buildings / conversions":
+  de afschrijvingsregels van het V2-rapport pakken 480, 482 en 483, maar niet 481. De
+  controleregel onder de tabel benoemt dit bedrag expliciet.
+- **Het teken van een rekening blijft bij de rekening.** Sleep je een omzetrekening naar
+  een kostenrubriek, dan houdt hij zijn omgedraaide teken. Dat is voorspelbaar, maar
+  betekent wel dat zo'n verplaatsing een negatief bedrag in de kosten kan opleveren.
 - **Runway** is een vereenvoudigde indicator (kredietruimte ÷ vaste maandlasten), geen
   vervanging voor een volledig scenariomodel met inkoopplanning en
   debiteuren/crediteurentiming.

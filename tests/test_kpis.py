@@ -7,7 +7,7 @@ ook aantonen dat de rekenlogica dezelfde uitkomsten geeft als de handmatige anal
 
 from datetime import date, timedelta
 
-from app import kpis
+from app import config, kpis
 
 
 def _iso(d):
@@ -561,11 +561,11 @@ def test_build_dashboard_payload_excludes_current_month_from_averages(monkeypatc
     """De belangrijkste garantie van deze feature: een halve lopende maand mag de
     gemiddelden, de blended marge en de break-evenvergelijking NIET omlaag trekken."""
     monkeypatch.setattr(kpis, "get_client", lambda: FakeOdooClient())
-    monkeypatch.setattr(kpis, "complete_month_windows", lambda n: [
-        (date(2026, 6, 1), date(2026, 7, 1)),
-        (date(2026, 7, 1), date(2026, 8, 1)),
-    ])
-    monkeypatch.setattr(kpis, "current_month_window", lambda: (date(2026, 8, 1), date(2026, 8, 13)))
+    # Datum-onafhankelijk: pak de ECHTE laatste twee volledige maanden, zodat de lopende
+    # maand er altijd naadloos op aansluit. Met hardgecodeerde datums brak deze test
+    # zodra de kalender een maand verder ging.
+    real_windows = kpis.complete_month_windows(2)
+    monkeypatch.setattr(kpis, "complete_month_windows", lambda n: real_windows)
     monkeypatch.setattr(kpis, "current_month_progress", lambda: {
         "label": "aug", "day_of_month": 12, "days_in_month": 31, "elapsed_pct": 39,
     })
@@ -613,11 +613,11 @@ def test_build_dashboard_payload_excludes_current_month_from_averages(monkeypatc
 
 def test_build_inventory_payload_excludes_current_month_from_coverage(monkeypatch):
     monkeypatch.setattr(kpis, "get_client", lambda: FakeOdooClient())
-    monkeypatch.setattr(kpis, "complete_month_windows", lambda n: [
-        (date(2026, 6, 1), date(2026, 7, 1)),
-        (date(2026, 7, 1), date(2026, 8, 1)),
-    ])
-    monkeypatch.setattr(kpis, "current_month_window", lambda: (date(2026, 8, 1), date(2026, 8, 13)))
+    # Datum-onafhankelijk: pak de ECHTE laatste twee volledige maanden, zodat de lopende
+    # maand er altijd naadloos op aansluit. Met hardgecodeerde datums brak deze test
+    # zodra de kalender een maand verder ging.
+    real_windows = kpis.complete_month_windows(2)
+    monkeypatch.setattr(kpis, "complete_month_windows", lambda n: real_windows)
     monkeypatch.setattr(kpis, "current_month_progress", lambda: {
         "label": "aug", "day_of_month": 12, "days_in_month": 31, "elapsed_pct": 39,
     })
@@ -1109,11 +1109,11 @@ def test_deferred_revenue_balance_is_reported_as_a_positive_amount():
 
 def test_dashboard_payload_splits_order_intake_into_direct_and_deferred(monkeypatch):
     monkeypatch.setattr(kpis, "get_client", lambda: FakeOdooClient())
-    monkeypatch.setattr(kpis, "complete_month_windows", lambda n: [
-        (date(2026, 6, 1), date(2026, 7, 1)),
-        (date(2026, 7, 1), date(2026, 8, 1)),
-    ])
-    monkeypatch.setattr(kpis, "current_month_window", lambda: (date(2026, 8, 1), date(2026, 8, 13)))
+    # Datum-onafhankelijk: pak de ECHTE laatste twee volledige maanden, zodat de lopende
+    # maand er altijd naadloos op aansluit. Met hardgecodeerde datums brak deze test
+    # zodra de kalender een maand verder ging.
+    real_windows = kpis.complete_month_windows(2)
+    monkeypatch.setattr(kpis, "complete_month_windows", lambda n: real_windows)
     monkeypatch.setattr(kpis, "current_month_progress", lambda: {
         "label": "aug", "day_of_month": 12, "days_in_month": 31, "elapsed_pct": 39,
     })
@@ -1164,3 +1164,246 @@ def test_pipeline_movement_without_partial_flag_marks_nothing_as_running():
     leads = [(1, "Quotation (50%)", 1000.0, "2026-01-05 09:00:00", True)]
     movement = kpis.fetch_pipeline_movement(_pipeline_client_full(leads, []), JULY)
     assert movement["months"][0]["partial"] is False
+
+
+# --- Winst- en verliesrekening ---------------------------------------------
+#
+# Een klein maar structureel representatief W&V-rapport: een groep met een
+# aggregation-formule waarin een teken zit (bruto = omzet MIN kostprijs), een groep met
+# een subgroep (bedrijfskosten > personeel), codereeksen die elkaar overlappen
+# (400 / 4010 / 401200) en een memoblok onderaan dat buiten de resultaatberekening valt.
+
+PL_LINES = [
+    (10, "Bruto verkoopresultaat", "BRUTO", None, 1),
+    (11, "Omzet", "OMZ", 10, 2),
+    (12, "Kostprijs omzet", "COGS", 10, 3),
+    (20, "Bedrijfskosten", "KOST", None, 4),
+    (21, "Personeelskosten", None, 20, 5),
+    (23, "Lonen", "LONEN", 21, 6),
+    (24, "Sociale lasten", "SOC", 21, 7),
+    (22, "Kantoorkosten", "KANT", 20, 8),
+    (30, "Resultaat", "RES", None, 9),
+    (90, "Memo kostprijs Locator", "MEMO", None, 10),
+]
+PL_EXPRS = [
+    (11, "account_codes", "- 80"),
+    (12, "account_codes", "7"),
+    (10, "aggregation", "OMZ.balance - COGS.balance"),
+    (23, "account_codes", "400"),
+    (24, "account_codes", "4010 + 401200"),
+    (22, "account_codes", "43"),
+    (21, "aggregation", "LONEN.balance + SOC.balance"),
+    (20, "aggregation", "LONEN.balance + SOC.balance + KANT.balance"),
+    (30, "aggregation", "BRUTO.balance - KOST.balance"),
+    (90, "account_codes", "700500"),
+]
+PL_ACCOUNTS = {
+    "800100": "Omzet NL",
+    "700500": "Kostprijs Locator One",
+    "400100": "Brutolonen",
+    "401000": "Sociale lasten werkgever",
+    "401200": "Premies",
+    "430500": "Abonnementen",
+    "999999": "Rekening buiten elke reeks",
+}
+# saldo per rekening per maandsleutel (zoals Odoo ze teruggeeft: omzet negatief)
+PL_BALANCES = {
+    "800100": {0: -10000.0, 1: -12000.0},
+    "700500": {0: 3000.0, 1: 4000.0},
+    "400100": {0: 5000.0, 1: 5000.0},
+    "401000": {0: 900.0, 1: 900.0},
+    "401200": {0: 100.0, 1: 100.0},
+    "430500": {0: 200.0, 1: 250.0},
+    "999999": {0: 42.0, 1: 8.0},
+}
+PL_ACCOUNT_IDS = {code: 500 + i for i, code in enumerate(sorted(PL_ACCOUNTS))}
+
+
+class FakePlClient(FakeOdooClient):
+    """Nep-Odoo met bovenstaand rapport. `month_boundaries=False` bootst een Odoo na die
+    bij read_group geen bruikbare maandgrenzen teruggeeft — dan hoort kpis.py terug te
+    vallen op een query per maand."""
+
+    def __init__(self, month_boundaries=True):
+        self.month_boundaries = month_boundaries
+        self.read_group_calls = []
+
+    def search_read(self, model, domain, fields, limit=0, order=None):
+        if model == "account.report":
+            return [{"id": config.PL_REPORT_ID, "name": "Testrapport W&V"}]
+        if model == "account.report.line":
+            return [
+                {"id": i, "name": n, "code": c, "parent_id": ([p, ""] if p else False), "sequence": s}
+                for i, n, c, p, s in PL_LINES
+            ]
+        if model == "account.report.expression":
+            return [
+                {"report_line_id": [lid, ""], "label": "balance", "engine": e, "formula": f}
+                for lid, e, f in PL_EXPRS
+            ]
+        if model == "account.account":
+            wanted = set(domain[0][2])
+            return [
+                {"id": PL_ACCOUNT_IDS[c], "code": c, "name": n}
+                for c, n in sorted(PL_ACCOUNTS.items())
+                if PL_ACCOUNT_IDS[c] in wanted
+            ]
+        raise AssertionError(f"onverwacht model {model}")
+
+    def read_group(self, model, domain, fields, groupby, lazy=True):
+        self.read_group_calls.append((tuple(groupby), lazy))
+        assert model == "account.move.line"
+        start, end = domain[1][2], domain[2][2]
+        windows = kpis.complete_month_windows(2)
+        rows = []
+        for index, (win_start, _win_end) in enumerate(windows):
+            key = _iso(win_start)
+            if not (start <= key < end):
+                continue
+            if not lazy and "date:month" not in groupby:
+                continue
+            for code, per_month in PL_BALANCES.items():
+                if index not in per_month:
+                    continue
+                row = {"account_id": [PL_ACCOUNT_IDS[code], code], "balance": per_month[index]}
+                if "date:month" in groupby and self.month_boundaries:
+                    row["__range"] = {"date:month": {"from": key, "to": key}}
+                rows.append(row)
+        return rows
+
+
+def _pl_payload(client=None, layout=None, months=2):
+    client = client or FakePlClient()
+    original = kpis.get_client
+    kpis.get_client = lambda: client
+    try:
+        return kpis.build_pl_payload(
+            months=months, layout=layout or {"overrides": {}, "custom": [], "storage": "geen"}
+        )
+    finally:
+        kpis.get_client = original
+
+
+def _pl_index(payload):
+    nodes = {}
+
+    def walk(items):
+        for n in items:
+            nodes[n["id"]] = n
+            walk(n.get("children") or [])
+    walk(payload["tree"])
+    return nodes
+
+
+def _pl_total(payload, node_id, key="cur"):
+    """Telt een regel op zoals de browser dat doet, zodat de tests dezelfde uitkomst
+    bewaken als het scherm laat zien."""
+    nodes = _pl_index(payload)
+    accounts = payload["accounts"]
+
+    def value(node):
+        if node["kind"] == "group":
+            return sum(node["signs"][c["id"]] * value(c) for c in node["children"])
+        if node["kind"] == "calc":
+            return sum(r["sign"] * value(nodes[r["id"]]) for r in node["refs"])
+        if node["kind"] == "rubriek":
+            return sum(
+                (sum(a["m"].values()) if key == "cur" else a["prev"])
+                for a in accounts if a["rubriek"] == node["id"]
+            )
+        return 0.0
+
+    return round(value(nodes[node_id]), 2)
+
+
+def test_pl_longest_code_range_wins_when_ranges_overlap():
+    payload = _pl_payload()
+    rubriek = {a["code"]: a["rubriek"] for a in payload["accounts"]}
+    assert rubriek["400100"] == "23"   # reeks "400"  -> Lonen
+    assert rubriek["401000"] == "24"   # reeks "4010" is langer dan "400"
+    assert rubriek["401200"] == "24"   # exact genoemd in de reeks van Sociale lasten
+    assert rubriek["430500"] == "22"   # reeks "43"   -> Kantoorkosten
+
+
+def test_pl_revenue_accounts_keep_odoo_sign_flip():
+    payload = _pl_payload()
+    omzet = next(a for a in payload["accounts"] if a["code"] == "800100")
+    assert omzet["sign"] == -1
+    # Odoo levert omzet als creditsaldo (negatief); in de W&V hoort hij positief te staan
+    assert sum(omzet["m"].values()) == 22000.0
+    assert _pl_total(payload, "11") == 22000.0
+
+
+def test_pl_account_outside_every_code_range_lands_in_unallocated():
+    payload = _pl_payload()
+    los = next(a for a in payload["accounts"] if a["code"] == "999999")
+    assert los["rubriek"] == kpis.UNALLOCATED_ID
+    # en telt daardoor niet mee in het resultaat — net zoals in Odoo zelf
+    assert _pl_total(payload, "30") == 22000.0 - 7000.0 - 12450.0
+
+
+def test_pl_memo_block_stays_out_of_the_tree_and_does_not_steal_accounts():
+    payload = _pl_payload()
+    nodes = _pl_index(payload)
+    assert "90" not in nodes, "het memoblok hoort niet in de W&V-boom te staan"
+    kostprijs = next(a for a in payload["accounts"] if a["code"] == "700500")
+    # de memoregel heeft de langere reeks (700500 vs 7) maar valt buiten de boom,
+    # dus de rekening hoort gewoon bij de kostprijs omzet te blijven
+    assert kostprijs["rubriek"] == "12"
+
+
+def test_pl_override_moves_an_account_without_changing_the_result():
+    layout = {"overrides": {"430500": "23"}, "custom": [], "storage": "postgres"}
+    payload = _pl_payload(layout=layout)
+    abonnementen = next(a for a in payload["accounts"] if a["code"] == "430500")
+    assert abonnementen["rubriek"] == "23"          # nu bij Lonen
+    assert abonnementen["default_rubriek"] == "22"  # volgens Odoo bij Kantoorkosten
+    assert _pl_total(payload, "22") == 0.0
+    assert _pl_total(payload, "30") == 22000.0 - 7000.0 - 12450.0
+
+
+def test_pl_override_pointing_at_a_vanished_rubriek_falls_back_to_odoo():
+    layout = {"overrides": {"430500": "999"}, "custom": [], "storage": "postgres"}
+    payload = _pl_payload(layout=layout)
+    abonnementen = next(a for a in payload["accounts"] if a["code"] == "430500")
+    assert abonnementen["rubriek"] == "22"
+    assert payload["layout"]["dangling"] == ["430500"]
+
+
+def test_pl_custom_rubriek_is_added_under_its_parent_and_counts_with_a_plus():
+    layout = {
+        "overrides": {"430500": "custom:1"},
+        "custom": [{"id": "custom:1", "name": "Marketing", "parent": "20"}],
+        "storage": "postgres",
+    }
+    payload = _pl_payload(layout=layout)
+    nodes = _pl_index(payload)
+    assert "custom:1" in nodes
+    assert nodes["20"]["signs"]["custom:1"] == 1
+    assert _pl_total(payload, "custom:1") == 450.0
+    # het totaal van de bedrijfskosten blijft kloppen: de eigen rubriek telt gewoon mee
+    assert _pl_total(payload, "20") == 12450.0
+
+
+def test_pl_monthly_columns_add_up_to_the_period_total():
+    payload = _pl_payload()
+    assert len(payload["months"]) >= 2
+    for account in payload["accounts"]:
+        maanden = sum(account["m"].values())
+        assert abs(maanden - sum(account["m"].get(m["key"], 0.0) for m in payload["months"])) < 0.01
+
+
+def test_pl_falls_back_to_one_query_per_month_when_odoo_gives_no_month_boundaries():
+    client = FakePlClient(month_boundaries=False)
+    payload = _pl_payload(client=client)
+    # eerst de gecombineerde poging, daarna één query per maand
+    assert (("account_id", "date:month"), False) in client.read_group_calls
+    assert (("account_id",), True) in client.read_group_calls
+    assert _pl_total(payload, "11") == 22000.0
+
+
+def test_pl_reports_that_the_layout_is_not_stored_without_a_database():
+    payload = _pl_payload(layout={"overrides": {}, "custom": [], "storage": "geen",
+                                  "message": "Geen database gekoppeld"})
+    assert payload["layout"]["storage"] == "geen"
+    assert payload["layout"]["override_count"] == 0

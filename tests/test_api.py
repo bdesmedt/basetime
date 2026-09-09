@@ -334,3 +334,101 @@ def test_api_details_caches_per_period(monkeypatch):
     client.get("/api/details/order_intake?months=3", headers=headers)
 
     assert [s[1] for s in seen] == [{"months": 3}, {"months": 6}]
+
+
+# --- Winst- en verliestab ----------------------------------------------------
+
+FAKE_PL_PAYLOAD = {
+    "period": {"label_text": "laatste 2 volledige maanden"},
+    "report": {"id": 25, "name": "Testrapport"},
+    "months": [{"key": "2026-07-01", "label": "jul", "partial": False}],
+    "tree": [], "accounts": [], "rubriek_options": [], "group_options": [],
+    "unallocated_id": "unallocated", "result_line_id": "30",
+    "layout": {"storage": "postgres", "override_count": 0, "custom_count": 0, "dangling": []},
+}
+
+
+def test_api_pl_requires_authentication():
+    client = TestClient(main.app)
+    assert client.get("/api/pl").status_code == 401
+
+
+def test_api_pl_returns_the_payload_and_caches_per_period(monkeypatch):
+    seen = []
+
+    def fake_build(**kwargs):
+        seen.append(kwargs)
+        return FAKE_PL_PAYLOAD
+
+    monkeypatch.setattr(main.kpis, "build_pl_payload", fake_build)
+    main._pl_cache.clear()
+
+    client = TestClient(main.app)
+    headers = _auth_header("testuser", "testpass")
+    resp = client.get("/api/pl?months=3", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["report"]["name"] == "Testrapport"
+    client.get("/api/pl?months=3", headers=headers)
+    client.get("/api/pl?months=6", headers=headers)
+    assert seen == [{"months": 3}, {"months": 6}]
+
+
+def test_moving_an_account_clears_the_pl_cache(monkeypatch):
+    moved = []
+    monkeypatch.setattr(main.db, "set_override", lambda code, rubriek: moved.append((code, rubriek)))
+    monkeypatch.setattr(main.kpis, "layout_summary", lambda: {"storage": "postgres"})
+    main._pl_cache["months:3"] = {"data": FAKE_PL_PAYLOAD, "fetched_at": 1e12}
+
+    client = TestClient(main.app)
+    resp = client.post(
+        "/api/pl/account", json={"code": "481000", "rubriek": "172"},
+        headers=_auth_header("testuser", "testpass"),
+    )
+    assert resp.status_code == 200
+    assert moved == [("481000", "172")]
+    assert main._pl_cache == {}, "de W&V-cache bevat nog de oude indeling"
+
+
+def test_moving_an_account_back_to_odoo_clears_the_override(monkeypatch):
+    cleared = []
+    monkeypatch.setattr(main.db, "clear_override", lambda code: cleared.append(code))
+    monkeypatch.setattr(main.kpis, "layout_summary", lambda: {"storage": "postgres"})
+
+    client = TestClient(main.app)
+    resp = client.post(
+        "/api/pl/account", json={"code": "481000", "rubriek": ""},
+        headers=_auth_header("testuser", "testpass"),
+    )
+    assert resp.status_code == 200
+    assert cleared == ["481000"]
+
+
+def test_changing_the_layout_without_a_database_gives_a_clear_message(monkeypatch):
+    def boom(*args, **kwargs):
+        raise main.db.StorageUnavailable("Er is geen DATABASE_URL ingesteld.")
+
+    monkeypatch.setattr(main.db, "set_override", boom)
+
+    client = TestClient(main.app)
+    resp = client.post(
+        "/api/pl/account", json={"code": "481000", "rubriek": "172"},
+        headers=_auth_header("testuser", "testpass"),
+    )
+    assert resp.status_code == 503
+    assert "DATABASE_URL" in resp.json()["detail"]
+
+
+def test_rubrieken_from_the_odoo_report_cannot_be_deleted():
+    client = TestClient(main.app)
+    resp = client.delete("/api/pl/rubriek/172", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 400
+    assert "zelf toegevoegde" in resp.json()["detail"]
+
+
+def test_adding_a_rubriek_needs_a_name_and_a_parent():
+    client = TestClient(main.app)
+    resp = client.post(
+        "/api/pl/rubriek", json={"name": "", "parent": "20"},
+        headers=_auth_header("testuser", "testpass"),
+    )
+    assert resp.status_code == 400
