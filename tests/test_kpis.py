@@ -1497,3 +1497,78 @@ def test_pl_lines_total_adds_up_when_odoo_returns_several_rows_per_account():
     result = kpis.fetch_pl_lines(MultiRow(1), ["430500"], date(2026, 8, 1), date(2026, 9, 1))
     assert result["total"] == 450.0
     assert result["total_per_account"] == {"430500": 450.0}
+
+
+# --- Momentopnames ----------------------------------------------------------
+
+SNAPSHOT_SOURCE = {
+    "cash": {"available_now": -133725.41, "credit_limit": -150000.0, "credit_headroom": 16274.59},
+    "aging": {
+        "receivables": {"total": 210000.0, "buckets": [
+            {"label": "Nog niet vervallen", "amount": 150000.0},
+            {"label": "1-30 dagen", "amount": 40000.0},
+            {"label": "90+ dagen", "amount": 20000.0},
+        ]},
+        "payables": {"total": 320000.0, "buckets": [
+            {"label": "Nog niet vervallen", "amount": 320000.0},
+        ]},
+    },
+    "pipeline": {"opportunity_count": 88, "nominal_total": 3694750.0, "weighted_total": 1842633.0},
+    "purchase_backlog": {"total": 1873025.92},
+    "deferred_revenue_balance": 222463.88,
+    # stromen: die horen er juist NIET in, Odoo kan die altijd opnieuw uitrekenen
+    "revenue": [87834.11, 87965.32],
+    "order_intake": [104086.41, 79071.17],
+}
+
+
+def test_snapshot_captures_only_the_standing_figures():
+    snap = kpis.snapshot_from_payload(SNAPSHOT_SOURCE)
+    assert snap["cash"] == -133725.41
+    assert snap["credit_headroom"] == 16274.59
+    assert snap["receivables"] == 210000.0
+    assert snap["payables"] == 320000.0
+    assert snap["pipeline_weighted"] == 1842633.0
+    assert snap["pipeline_count"] == 88
+    assert snap["purchase_backlog"] == 1873025.92
+    assert snap["deferred_revenue"] == 222463.88
+    # stromen worden bewust niet vastgelegd — die zijn achteraf uit Odoo te halen
+    assert "revenue" not in snap
+    assert "order_intake" not in snap
+    assert set(snap) == {key for key, _, _ in kpis.SNAPSHOT_METRICS}
+
+
+def test_snapshot_overdue_receivables_exclude_what_is_not_due_yet():
+    snap = kpis.snapshot_from_payload(SNAPSHOT_SOURCE)
+    assert snap["receivables_overdue"] == 60000.0   # 40.000 + 20.000, niet de 150.000
+    assert snap["payables"] == 320000.0
+
+
+def test_snapshot_of_an_incomplete_payload_does_not_crash():
+    snap = kpis.snapshot_from_payload({})
+    assert set(snap) == {key for key, _, _ in kpis.SNAPSHOT_METRICS}
+    assert snap["cash"] is None
+    assert snap["receivables_overdue"] == 0.0
+
+
+def test_snapshot_series_reports_that_nothing_is_recorded_yet(monkeypatch):
+    monkeypatch.setattr(kpis.db, "load_snapshots", lambda days=365: [])
+    monkeypatch.setattr(kpis.db, "configured", lambda: False)
+    series = kpis.build_snapshot_series()
+    assert series["count"] == 0
+    assert series["first_date"] is None
+    assert series["storage"] == "geen"
+    assert [m["key"] for m in series["metrics"]] == [k for k, _, _ in kpis.SNAPSHOT_METRICS]
+
+
+def test_snapshot_series_returns_the_points_oldest_first(monkeypatch):
+    rows = [
+        {"date": "2026-09-02", "cash": -100.0},
+        {"date": "2026-09-09", "cash": -200.0},
+    ]
+    monkeypatch.setattr(kpis.db, "load_snapshots", lambda days=365: rows)
+    monkeypatch.setattr(kpis.db, "configured", lambda: True)
+    series = kpis.build_snapshot_series()
+    assert series["first_date"] == "2026-09-02"
+    assert series["last_date"] == "2026-09-09"
+    assert series["count"] == 2

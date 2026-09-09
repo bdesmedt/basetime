@@ -1,5 +1,6 @@
 """
-Opslag van de EIGEN W&V-indeling (Postgres op Railway).
+Alles wat het dashboard zelf moet onthouden (Postgres op Railway): de eigen
+W&V-indeling en de wekelijkse momentopnames.
 
 Waarom hier een database bij komt terwijl de rest van het dashboard stateless is:
 het Odoo-rapport koppelt rubrieken aan codereeksen ("alles wat met 45 begint"). Je kunt
@@ -8,9 +9,18 @@ elke verversing naar een concrete indeling rekening -> rubriek, en legt hier all
 wat de gebruiker daarvan afwijkt. Dat handjevol afwijkingen moet een deploy overleven,
 en dat kan niet in de code of in het geheugen van de webserver.
 
-Twee tabellen, meer is het niet:
+Drie tabellen, meer is het niet:
   pl_account_override  rekeningcode -> rubriek (de afwijkingen)
   pl_custom_rubriek    zelf toegevoegde rubrieken
+  kpi_snapshot         wekelijkse momentopname van de standen (zie hieronder)
+
+Over die snapshots: bijna alles op het dashboard kan Odoo achteraf opnieuw uitrekenen —
+omzet van maart, kosten van juli, dat staat er over een jaar nog net zo. Maar de STAND op
+een moment kan Odoo NIET reconstrueren: hoe groot de pijplijn was, wat er openstond aan
+debiteuren, hoeveel kredietruimte er was. Odoo bewaart alleen de situatie van nu. Dat
+bleek al bij de gewogen pijplijn: die konden we niet terughalen omdat Odoo de kans per
+opportunity niet historisch bijhoudt. Daarom leggen we die standen vast zodra ze
+langskomen — elke week die je overslaat is voorgoed weg.
 
 BELANGRIJK — dit bestand mag nooit de hele pagina onderuit halen. Ontbreekt DATABASE_URL,
 is psycopg niet geïnstalleerd of ligt de database eruit, dan geeft load_layout() gewoon
@@ -49,6 +59,15 @@ _SCHEMA_STATEMENTS = [
         name       TEXT        NOT NULL,
         parent_id  TEXT        NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    # Eén rij per dag. De metingen zitten als JSON in payload, zodat er later een cijfer
+    # bij kan zonder de tabel te hoeven wijzigen — en oude rijen gewoon blijven staan.
+    """
+    CREATE TABLE IF NOT EXISTS kpi_snapshot (
+        taken_on DATE        PRIMARY KEY,
+        taken_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        payload  JSONB       NOT NULL
     )
     """,
 ]
@@ -235,3 +254,60 @@ def reset() -> None:
             cur.execute("DELETE FROM pl_account_override")
             cur.execute("DELETE FROM pl_custom_rubriek")
     _with_conn(_write)
+
+
+# --- Momentopnames ------------------------------------------------------------
+
+def save_snapshot(payload: dict, taken_on: "datetime.date | None" = None) -> None:
+    """Legt de standen van vandaag vast. Draai je het twee keer op een dag, dan
+    overschrijft de laatste meting de eerste — één punt per dag houdt de reeks leesbaar."""
+    import json as _json
+
+    def _write(conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO kpi_snapshot (taken_on, taken_at, payload)
+                VALUES (COALESCE(%s, CURRENT_DATE), now(), %s)
+                ON CONFLICT (taken_on)
+                DO UPDATE SET payload = EXCLUDED.payload, taken_at = now()
+                """,
+                (taken_on, _json.dumps(payload)),
+            )
+    _with_conn(_write)
+
+
+def snapshot_exists_today() -> bool:
+    def _read(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM kpi_snapshot WHERE taken_on = CURRENT_DATE")
+            return cur.fetchone() is not None
+    return _with_conn(_read)
+
+
+def load_snapshots(days: int = 365, limit: int = 400) -> list[dict]:
+    """De vastgelegde reeks, oudste eerst. Geeft een lege lijst terug als er (nog) geen
+    database is — het dashboard laat dan zien dat het vastleggen nog moet beginnen."""
+    if not config.DATABASE_URL:
+        return []
+    try:
+        def _read(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT taken_on, payload FROM kpi_snapshot
+                    WHERE taken_on >= CURRENT_DATE - %s::int
+                    ORDER BY taken_on DESC LIMIT %s
+                    """,
+                    (days, limit),
+                )
+                return [
+                    {"date": taken_on.isoformat(), **(payload or {})}
+                    for taken_on, payload in cur.fetchall()
+                ]
+        rows = _with_conn(_read)
+        rows.reverse()
+        return rows
+    except Exception as exc:
+        logger.warning("Kon de momentopnames niet lezen: %s", exc)
+        return []

@@ -84,6 +84,25 @@ ODOO_RECORD_URL_TEMPLATE = _get_env(
 # de lijst afgekapt (met melding); het totaalbedrag blijft wel het volledige bedrag.
 PL_DETAIL_LINE_LIMIT = int(_get_env("PL_DETAIL_LINE_LIMIT", "500"))
 
+# --- Vastleggen van standen (momentopnames) ---------------------------------
+# Het dashboard legt zelf één keer per dag de standen vast (cash, debiteuren, pijplijn,
+# backlog) omdat Odoo die achteraf niet kan reconstrueren. Dat gebeurt automatisch zodra
+# iemand de pagina opent, en daarnaast door een ingebouwde planner die blijft doorlopen
+# als er een tijd niemand kijkt. Zo is er geen aparte cron-service nodig.
+SNAPSHOT_SCHEDULER_ENABLED = _get_env("SNAPSHOT_SCHEDULER_ENABLED", "1") not in (
+    "0", "false", "False", "nee", "off", ""
+)
+
+# Hoe vaak de planner kijkt óf de meting van vandaag er al staat. Staat hij er, dan doet
+# de planner niets (één goedkope databasevraag). Alleen als hij ontbreekt, wordt er een
+# verse set cijfers uit Odoo gehaald — dus maximaal één keer per dag.
+SNAPSHOT_CHECK_MINUTES = int(_get_env("SNAPSHOT_CHECK_MINUTES", "60"))
+
+# Wachttijd na het opstarten voordat de planner voor het eerst kijkt. Geeft de webserver
+# de kans om eerst gezond te worden (Railway doet een health check) voordat er een
+# Odoo-aanroep overheen gaat.
+SNAPSHOT_STARTUP_DELAY_SECONDS = int(_get_env("SNAPSHOT_STARTUP_DELAY_SECONDS", "90"))
+
 # --- Cache ------------------------------------------------------------------
 # Hoe lang (in seconden) een opgehaalde KPI-set warm blijft voordat een nieuwe
 # paginabezoek een verse Odoo-query triggert. 900s = 15 minuten. Zet lager als je

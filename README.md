@@ -6,8 +6,9 @@ intake, recurring/subscription-omzet, brutomarge, inkoopbacklog, gewogen pipelin
 (sinds deze versie) ouderdomsanalyse debiteuren/crediteuren, klantconcentratie in de
 gefactureerde omzet, en de benodigde break-evenomzet per maand.
 
-Vier tabbladen: **Overzicht** (de KPI's), **Winst & verlies** (de W&V tot op
-grootboekniveau, met een aanpasbare rubrieksindeling en doorklik naar de boekingsregels),
+Vier tabbladen: **Overzicht** (de KPI's, met de standen door de tijd), **Winst &
+verlies** (de W&V tot op grootboekniveau, met een aanpasbare rubrieksindeling, een
+overzicht van de grootste verschuivingen en doorklik naar de boekingsregels),
 **Voorraad** en **Actieplan**.
 
 - **Backend**: Python (FastAPI), praat met Odoo via de officiële externe XML-RPC-API.
@@ -17,9 +18,9 @@ grootboekniveau, met een aanpasbare rubrieksindeling en doorklik naar de boeking
 - **Cache**: opgehaalde cijfers blijven 15 minuten warm (instelbaar), zodat niet elke
   paginabezoek meteen Odoo belast. Een "Vernieuwen"-knop op het dashboard forceert een
   verse ophaal-actie.
-- **Database**: alleen nodig voor de eigen rubrieksindeling van de W&V-tab (Postgres op
-  Railway, zie stap 4b). Alle cijfers komen live uit Odoo; er wordt niets van Odoo in de
-  database gekopieerd.
+- **Database**: nodig voor de eigen rubrieksindeling van de W&V-tab (stap 4b) en voor het
+  vastleggen van standen door de tijd (stap 4c). Postgres op Railway. Alle cijfers komen
+  live uit Odoo; alleen de standen die Odoo niet kan reconstrueren worden bewaard.
 
 Dit project is voortgekomen uit een concept-dashboard (los HTML-bestand met een
 momentopname) dat is besproken in het Claude-project "Basetime" — zie
@@ -126,6 +127,63 @@ zoals die in Odoo staat, met de melding erbij dat wijzigingen niet bewaard kunne
 worden; de knoppen om te verplaatsen staan dan uit. Ligt de database er tijdelijk uit,
 dan gebeurt hetzelfde — de pagina blijft werken.
 
+## Stap 4c — Standen vastleggen (aanbevolen, maar niet verplicht)
+
+Bijna alles op dit dashboard kan Odoo achteraf opnieuw uitrekenen: de omzet van maart
+staat er volgend jaar nog net zo. Maar de **stand op een moment** niet — hoe groot de
+pijplijn vorige maand was, wat er toen openstond aan debiteuren, hoeveel kredietruimte er
+nog was. Odoo bewaart alleen de situatie van nu. Daarom legt het dashboard die standen
+zelf vast, in de tabel `kpi_snapshot`. Ze verschijnen op het Overzicht-tabblad onder
+"Standen door de tijd".
+
+Vastgelegd worden: beschikbare cash, kredietruimte, openstaande en vervallen debiteuren,
+openstaande crediteuren, gewogen en nominale pipeline, aantal open kansen, inkoopbacklog
+en het saldo nog te nemen omzet. Stromen (omzet, order intake, kosten per maand) juist
+níet — die haalt het dashboard altijd vers uit Odoo.
+
+**Er is niets te configureren.** Zodra er een database is gekoppeld gebeurt het
+vastleggen vanzelf, op twee manieren die elkaar aanvullen:
+
+1. **Bij een paginabezoek.** Het eerste bezoek van elke dag schrijft een meting weg uit
+   de cijfers die op dat moment toch al zijn opgehaald — nul extra Odoo-queries.
+2. **Door de ingebouwde planner.** In dezelfde webserver draait een achtergrondtaak die
+   elk uur kijkt of de meting van vandaag er al staat. Staat hij er, dan doet hij niets
+   (één goedkope databasevraag). Ontbreekt hij, dan haalt hij één keer verse cijfers op
+   en legt de standen vast. Zo blijft de reeks doorlopen als er een week niemand kijkt,
+   en is er **geen aparte cron-service nodig**.
+
+Hoe dan ook blijft het bij **één punt per dag**; een tweede meting op dezelfde dag
+overschrijft de eerste.
+
+Of de planner draait, zie je aan `/healthz`:
+`{"status":"ok","database":true,"snapshot_scheduler":true}`. Staat `database` op `false`,
+dan is `DATABASE_URL` nog niet gekoppeld en start de planner bewust niet — er valt dan
+immers niets vast te leggen.
+
+Bijstellen kan met deze variabelen (allemaal optioneel):
+
+| Variabele | Standaard | Wat het doet |
+|---|---|---|
+| `SNAPSHOT_SCHEDULER_ENABLED` | `1` | Zet de ingebouwde planner uit met `0` |
+| `SNAPSHOT_CHECK_MINUTES` | `60` | Hoe vaak de planner kijkt of de meting van vandaag er al staat |
+| `SNAPSHOT_STARTUP_DELAY_SECONDS` | `90` | Wachttijd na het opstarten, zodat de health check eerst slaagt |
+
+**Handmatig een meting forceren** (bijvoorbeeld na een correctie in Odoo): een POST op
+`/api/snapshot`, of `python -m app.snapshot` in een shell. Dat overschrijft de meting van
+vandaag.
+
+**Liever buiten de webserver om?** Dat kan ook: maak een tweede Railway-service op
+dezelfde repository met start command `python -m app.snapshot` en een **Cron Schedule**
+(Railway verwacht dat een cron-service afsluit als hij klaar is, en dat doet dit script).
+Geef die service dezelfde `ODOO_*`-variabelen en een reference naar `DATABASE_URL`; een
+dashboardwachtwoord is niet nodig, want het script praat rechtstreeks met Odoo en de
+database. Zet dan `SNAPSHOT_SCHEDULER_ENABLED=0` op de webservice om dubbel werk te
+voorkomen — al is dat niet strikt nodig, want beide routes schrijven naar dezelfde ene
+rij per dag.
+
+Wat je niet kunt: met terugwerkende kracht standen aanvullen. Elke dag die niet is
+vastgelegd, blijft leeg.
+
 ## Stap 5 — Testen
 
 1. Open de Railway-URL. Je krijgt een inlogvenster van de browser (basic-auth) —
@@ -133,8 +191,10 @@ dan gebeurt hetzelfde — de pagina blijft werken.
 2. Het dashboard laadt en haalt meteen live cijfers uit Odoo. Duurt dit lang of loopt het
    vast, kijk dan in Railway onder **Deployments → View Logs** naar de foutmelding
    (meestal een verkeerde `ODOO_*`-variabele).
-3. `/healthz` (zonder inloggen) moet `{"status": "ok"}` teruggeven — dat gebruikt Railway
-   zelf als health check.
+3. `/healthz` (zonder inloggen) moet `{"status": "ok", ...}` teruggeven — dat gebruikt
+   Railway zelf als health check. De twee vlaggen erbij (`database` en
+   `snapshot_scheduler`) laten zien of de database is gekoppeld en of de planner draait
+   die de standen vastlegt; er staan geen bedrijfscijfers in.
 
 ---
 
@@ -170,6 +230,17 @@ pytest
   "Terug naar Odoo" zet je alles terug zoals het Odoo-rapport het berekent. Het knopje
   **i** achter een rubriek laat zien welke codereeks Odoo gebruikt en welke rekeningen
   er nu in vallen.
+- **Standen door de tijd**: de grafiek onderaan het Overzicht-tabblad groeit vanzelf mee
+  (zie stap 4c) — het dashboard legt de standen zelf dagelijks vast, zonder dat je iets
+  hoeft in te plannen. Wil je een meting nu forceren: `python -m app.snapshot`, of een
+  POST op `/api/snapshot`.
+- **Grootste verschuivingen**: onder de W&V-tabel, in de weergaven met twee kolommen
+  (periode vs vorig jaar, of de laatste maand tegen de vorige). Gerangschikt op het
+  effect op het eindresultaat, niet op het ruwe verschil — een omzetdaling en een
+  kostenstijging hebben tegengestelde tekens in de tabel maar doen allebei pijn onderaan
+  de streep. Te bekijken per rubriek of per grootboekrekening, met dezelfde doorklik naar
+  de boekingsregels. Dit rekent volledig in de browser op de cijfers die al voor de tabel
+  zijn opgehaald; het kost geen extra Odoo-query.
 - **Doorklikken naar de boeking**: klik op een bedrag in de W&V-tabel (op een rubriek- of
   rekeningregel) en je krijgt de boekingsregels erachter, met leverancier, omschrijving,
   dagboek en een link naar het boekstuk in Odoo — daar zit ook de factuur-PDF aan vast.

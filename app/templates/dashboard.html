@@ -458,6 +458,21 @@
       <button class="detail-link" onclick="openDetailModal('purchase_backlog')">Bekijk alle open inkooporders →</button>
     </div>
 
+    <!-- Vastgelegde standen. Deze reeks komt uit de eigen database, niet uit Odoo:
+         Odoo bewaart alleen hoe het NU is, dus hoe groot de pijplijn vorige maand was of
+         hoeveel er toen openstond, is achteraf niet meer op te vragen. Daarom leggen we
+         die standen bij elke verversing vast. -->
+    <div class="heading-row" style="margin-top:32px;">
+      <h2 class="section" style="margin:0;">Standen door de tijd</h2>
+      <select class="pl-select" id="history-metric" onchange="renderHistory()"></select>
+    </div>
+    <p class="section-note" id="history-note">Laden…</p>
+    <div class="chart-card" id="history-card">
+      <div class="chart-sub" id="history-sub"></div>
+      <svg id="chart-history" viewBox="0 0 520 220" preserveAspectRatio="none" style="width:100%;height:220px"></svg>
+      <div id="history-empty" class="skeleton" style="display:none"></div>
+    </div>
+
     <h2 class="section">Aandachtspunten</h2>
     <div class="notes">
       <ul>
@@ -609,6 +624,35 @@
       </div>
       <div class="pl-foot" id="pl-control"></div>
       <div class="pl-foot" id="pl-help"></div>
+    </div>
+
+    <!-- Grootste verschuivingen. Rekent volledig in de browser op de cijfers die al voor
+         de tabel hierboven zijn opgehaald — geen extra Odoo-query. Gerangschikt op
+         EFFECT OP HET RESULTAAT, niet op het ruwe verschil: een omzetdaling en een
+         kostenstijging doen allebei pijn, maar hebben tegengestelde tekens. -->
+    <div class="heading-row" style="margin-top:28px;">
+      <h2 class="section" style="margin:0;">Grootste verschuivingen</h2>
+      <div class="pl-toolbar" style="margin:0;">
+        <select class="pl-select" id="pl-changes-level" onchange="renderPlChanges()">
+          <option value="rubriek">Per rubriek</option>
+          <option value="account">Per grootboekrekening</option>
+        </select>
+        <select class="pl-select" id="pl-changes-top" onchange="renderPlChanges()">
+          <option value="10">Top 10</option>
+          <option value="25">Top 25</option>
+          <option value="0">Alles</option>
+        </select>
+      </div>
+    </div>
+    <p class="section-note" id="pl-changes-note"></p>
+    <div class="pl-panel" id="pl-changes-panel">
+      <div class="pl-scroll">
+        <table class="pl-table" id="pl-changes-table">
+          <thead><tr id="pl-changes-head"></tr></thead>
+          <tbody id="pl-changes-body"></tbody>
+        </table>
+      </div>
+      <div class="pl-foot" id="pl-changes-foot"></div>
     </div>
 
   </div>
@@ -1797,6 +1841,9 @@ async function loadData(forceRefresh){
     }
     const payload = await resp.json();
     render(payload);
+    // Pas hierna: het ophalen van /api/kpis is ook het moment waarop de stand van vandaag
+    // wordt vastgelegd, dus dan is de reeks meteen bij.
+    loadHistory();
   } catch (err){
     document.getElementById('skeleton').style.display = 'none';
     document.getElementById('app').style.display = 'none';
@@ -2253,6 +2300,8 @@ function renderPl(){
   document.getElementById('pl-reset').disabled = (changes === 0) || !plCanEdit();
   document.getElementById('pl-add-rubriek').disabled = !plCanEdit();
 
+  renderPlChanges();
+
   document.getElementById('pl-help').innerHTML = plCanEdit()
     ? 'Met <b>i</b> zie je welke codereeks Odoo voor een rubriek gebruikt en welke rekeningen er nu in vallen. ' +
       'Verplaatsen kan door een rekening te slepen of met <b>⇄</b> op de regel. Bedragen zoals het Odoo-rapport ze toont.'
@@ -2411,6 +2460,158 @@ function plDefaultOpen(){
   return open;
 }
 
+// --- Grootste verschuivingen ------------------------------------------------
+// Rangschikt op EFFECT OP HET RESULTAAT, niet op het ruwe verschil. Een omzet die € 50k
+// daalt en een kostenpost die € 50k stijgt hebben tegengestelde tekens in de tabel, maar
+// doen allebei even veel pijn onderaan de streep. plSign zegt met welk teken een regel in
+// het eindresultaat meetelt; dat teken maal het verschil is het effect.
+// Alles gebeurt hier in de browser, op de cijfers die al voor de W&V-tabel zijn opgehaald.
+
+function plCompareColumns(){
+  const cols = plMode().cols;
+  const hasDelta = cols.some(c => c.type === 'delta');
+  if (!hasDelta) return null;
+  const values = cols.filter(c => !c.type);
+  return (values.length >= 2) ? { now: values[0], before: values[1] } : null;
+}
+
+function plChangeRows(level, cols){
+  const rows = [];
+  if (level === 'account'){
+    plData.accounts.forEach(a => {
+      const rubriek = plById[a.rubriek];
+      rows.push({
+        key: a.code,
+        name: a.name,
+        code: a.code,
+        context: rubriek ? rubriek.name : '',
+        sign: plSign[a.rubriek] || 0,
+        now: cols.now.val(a),
+        before: cols.before.val(a),
+        accounts: [a],
+      });
+    });
+  } else {
+    const seen = {};
+    plData.accounts.forEach(a => {
+      const rubriek = plById[a.rubriek];
+      if (!rubriek) return;
+      let row = seen[a.rubriek];
+      if (!row){
+        row = seen[a.rubriek] = {
+          key: a.rubriek, name: rubriek.name, code: '',
+          context: plRubriekParentName(a.rubriek),
+          sign: plSign[a.rubriek] || 0,
+          now: 0, before: 0, accounts: [],
+        };
+        rows.push(row);
+      }
+      row.now += cols.now.val(a);
+      row.before += cols.before.val(a);
+      row.accounts.push(a);
+    });
+  }
+  rows.forEach(r => {
+    r.delta = r.now - r.before;
+    r.impact = r.sign * r.delta;   // effect op het eindresultaat
+  });
+  return rows.filter(r => Math.abs(r.delta) >= 0.5)
+             .sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact) ||
+                             Math.abs(b.delta) - Math.abs(a.delta));
+}
+
+function plRubriekParentName(rubriekId){
+  // zoekt de bovenliggende groep op, zodat "Lonen en salarissen" ook zijn context toont
+  let found = '';
+  const walk = (nodes, trail) => nodes.forEach(n => {
+    if (n.id === rubriekId) found = trail;
+    if (n.children) walk(n.children, n.name);
+  });
+  walk(plData.tree, '');
+  return found;
+}
+
+function renderPlChanges(){
+  const note = document.getElementById('pl-changes-note');
+  const panel = document.getElementById('pl-changes-panel');
+  const head = document.getElementById('pl-changes-head');
+  const body = document.getElementById('pl-changes-body');
+  const foot = document.getElementById('pl-changes-foot');
+  const cols = plCompareColumns();
+
+  if (!cols){
+    panel.style.display = 'none';
+    note.innerHTML = 'Kies bovenaan een weergave met twee kolommen — ' +
+      '<b>Periode · vergeleken met vorig jaar</b> of de laatste maand tegen de vorige — ' +
+      'dan staat hier wat er precies is verschoven.';
+    return;
+  }
+  panel.style.display = '';
+
+  const level = document.getElementById('pl-changes-level').value;
+  const topN = parseInt(document.getElementById('pl-changes-top').value, 10) || 0;
+  const all = plChangeRows(level, cols);
+  const shown = topN ? all.slice(0, topN) : all;
+
+  const resultNode = plById[plData.result_line_id];
+  const totalChange = plNodeValue(resultNode, cols.now, false) -
+                      plNodeValue(resultNode, cols.before, false);
+  const explained = shown.reduce((s, r) => s + r.impact, 0);
+
+  head.innerHTML = '<th class="pl-l">' + (level === 'account' ? 'Grootboekrekening' : 'Rubriek') +
+    '</th><th>' + cols.now.label + '</th><th>' + cols.before.label +
+    '</th><th class="sep">Verschil</th><th>Δ %</th><th class="sep">Effect op resultaat</th>';
+
+  body.innerHTML = '';
+  shown.forEach(r => {
+    const tr = body.insertRow();
+    const td = tr.insertCell();
+    td.className = 'pl-l';
+    td.innerHTML = (r.code ? '<span class="pl-code">' + plEsc(r.code) + '</span>' : '') +
+      '<span class="pl-name">' + plEsc(r.name) + '</span>' +
+      (r.context ? ' <span class="pl-code">' + plEsc(r.context) + '</span>' : '');
+
+    [[r.now, cols.now], [r.before, cols.before]].forEach(([value, col]) => {
+      const cell = tr.insertCell();
+      cell.textContent = plFmt(value);
+      cell.classList.add('pl-click');
+      cell.title = 'Bekijk de boekingsregels achter dit bedrag';
+      cell.onclick = () => openPlLines(r.code ? r.code + ' ' + r.name : r.name, r.accounts, col);
+    });
+
+    const dCell = tr.insertCell();
+    dCell.textContent = fmtEUR0.format(r.delta);
+    dCell.className = 'sep ' + (r.impact === 0 ? '' : (r.impact > 0 ? 'pl-up' : 'pl-down'));
+
+    const pCell = tr.insertCell();
+    pCell.textContent = (Math.abs(r.before) < 0.5) ? 'nieuw'
+      : ((r.delta / Math.abs(r.before) * 100 > 0 ? '+' : '') +
+         (r.delta / Math.abs(r.before) * 100).toFixed(0) + '%');
+    pCell.className = dCell.className.replace('sep ', '');
+
+    const iCell = tr.insertCell();
+    iCell.className = 'sep ' + (r.impact === 0 ? '' : (r.impact > 0 ? 'pl-up' : 'pl-down'));
+    iCell.textContent = (r.sign === 0) ? 'telt niet mee' : fmtEUR0.format(r.impact);
+  });
+
+  const richting = totalChange >= 0 ? 'beter' : 'slechter';
+  note.innerHTML = 'Wat is er tussen <b>' + cols.before.label + '</b> en <b>' + cols.now.label +
+    '</b> verschoven, gerangschikt op het effect op ' + plEsc(resultNode.name) + '. ' +
+    'Dat resultaat werd ' + fmtEUR0.format(Math.abs(totalChange)) + ' ' + richting + '.';
+
+  let f = 'De ' + shown.length + ' getoonde regel' + (shown.length === 1 ? '' : 's') +
+    ' verklaren samen ' + fmtEUR0.format(explained) + ' van de ' +
+    fmtEUR0.format(totalChange) + ' verandering';
+  if (Math.abs(totalChange) >= 0.5){
+    f += ' (' + Math.round(Math.abs(explained) / Math.abs(totalChange) * 100) + '%)';
+  }
+  f += '.';
+  if (all.length > shown.length) f += ' Er zijn er nog ' + (all.length - shown.length) + ' die kleiner zijn.';
+  f += ' Een percentage boven de 100 kan: plussen en minnen heffen elkaar in het totaal ' +
+       'deels op. Klik op een bedrag om de boekingsregels erachter te zien.';
+  foot.innerHTML = f;
+}
+
 // --- doorklik naar de boekingsregels achter een bedrag ----------------------
 // De lijst gebruikt exact dezelfde afbakening als de cel waarop je klikt, dus hij telt
 // per definitie op tot dat bedrag. De onderste regel laat dat ook zien.
@@ -2518,6 +2719,93 @@ function renderPlLines(){
   }
   foot += ' Klik op een boekstuk om de boeking (en de bijlage) in Odoo te openen.';
   document.getElementById('pl-lines-foot').innerHTML = foot;
+}
+
+// --- Standen door de tijd ---------------------------------------------------
+// Deze reeks komt NIET uit Odoo maar uit de eigen database. Odoo bewaart alleen de
+// situatie van nu: hoeveel er vandaag openstaat aan debiteuren en hoe groot de pijplijn
+// is, kun je morgen niet meer over vandaag opvragen. Vandaar dat het dashboard die
+// standen vastlegt zodra het verse cijfers ophaalt.
+
+let historyData = null;
+
+async function loadHistory(){
+  try {
+    const resp = await fetch('/api/snapshots?days=365');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    historyData = await resp.json();
+    const sel = document.getElementById('history-metric');
+    if (!sel.options.length){
+      sel.innerHTML = historyData.metrics
+        .map(m => '<option value="' + m.key + '">' + m.label + '</option>').join('');
+    }
+    renderHistory();
+  } catch (err) {
+    document.getElementById('history-note').textContent =
+      'Kon de vastgelegde standen niet ophalen: ' + err.message;
+  }
+}
+
+function renderHistory(){
+  if (!historyData) return;
+  const note = document.getElementById('history-note');
+  const empty = document.getElementById('history-empty');
+  const svg = document.getElementById('chart-history');
+  const sub = document.getElementById('history-sub');
+  const key = document.getElementById('history-metric').value ||
+              (historyData.metrics[0] && historyData.metrics[0].key);
+  const metric = historyData.metrics.find(m => m.key === key) || {};
+
+  const points = (historyData.points || []).filter(p => p[key] !== null && p[key] !== undefined);
+
+  if (historyData.storage !== 'postgres'){
+    note.textContent = 'Er is nog geen database gekoppeld, dus er wordt nog niets vastgelegd. ' +
+      'Zodra dat gebeurt, groeit hier vanzelf een reeks — met terugwerkende kracht kan het niet.';
+  } else if (points.length < 2){
+    note.textContent = 'Het vastleggen is begonnen' +
+      (historyData.first_date ? ' op ' + fmtDateNL(historyData.first_date) : '') +
+      '. Vanaf de tweede meting staat hier een lijn; deze standen zijn achteraf niet uit Odoo te halen.';
+  } else {
+    const first = points[0], last = points[points.length - 1];
+    const change = (last[key] || 0) - (first[key] || 0);
+    note.textContent = points.length + ' metingen, van ' + fmtDateNL(first.date) +
+      ' tot ' + fmtDateNL(last.date) + '. Verandering over die periode: ' +
+      (metric.unit === 'count' ? (change > 0 ? '+' : '') + change : fmtEUR0.format(change)) + '.';
+  }
+
+  if (points.length < 2){
+    svg.style.display = 'none';
+    empty.style.display = 'block';
+    empty.textContent = points.length === 1
+      ? 'Eén meting vastgelegd — nog te weinig voor een lijn.'
+      : 'Nog geen metingen vastgelegd.';
+    sub.textContent = '';
+    return;
+  }
+
+  svg.style.display = 'block';
+  empty.style.display = 'none';
+  // Korte aslabels (dag/maand): bij een reeks van tientallen metingen passen voluit
+  // geschreven datums niet meer, en het laatste label liep buiten de grafiek.
+  const labels = points.map(p => fmtDateShort(p.date));
+  const series = points.map(p => p[key] || 0);
+  const fmt = (metric.unit === 'count')
+    ? (v => Math.round(v).toString())
+    : (v => '€' + fmtEURK(v));
+  sub.textContent = metric.label + ' — vastgelegd door het dashboard, niet herleidbaar uit Odoo';
+  drawLine('chart-history', labels, series, css('--series-1'), fmt, false);
+}
+
+function fmtDateShort(iso){
+  if (!iso) return '';
+  const [, m, d] = iso.split('-');
+  return parseInt(d, 10) + '/' + parseInt(m, 10);
+}
+
+function fmtDateNL(iso){
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-');
+  return parseInt(d, 10) + ' ' + ['jan','feb','mrt','apr','mei','jun','jul','aug','sep','okt','nov','dec'][parseInt(m, 10) - 1];
 }
 
 async function loadPlData(forceRefresh){

@@ -2121,3 +2121,70 @@ def fetch_pl_lines(
         "limit": limit,
         "accounts": [{"code": a["code"], "name": a["name"]} for a in accounts],
     }
+
+
+# --- Momentopnames ----------------------------------------------------------
+#
+# Wat we vastleggen is bewust een KORTE lijst: alleen de cijfers die een STAND op een
+# moment beschrijven. Stromen (omzet, order intake, kosten per maand) laten we met rust —
+# die kan Odoo altijd opnieuw uitrekenen. Standen niet: Odoo bewaart alleen hoe het nú
+# is, dus wat er vandaag openstaat aan debiteuren of in de pijplijn zit, is morgen niet
+# meer te achterhalen. Zie ook db.py.
+
+SNAPSHOT_METRICS = [
+    ("cash", "Beschikbare cash", "eur"),
+    ("credit_headroom", "Kredietruimte", "eur"),
+    ("receivables", "Openstaande debiteuren", "eur"),
+    ("receivables_overdue", "Debiteuren vervallen", "eur"),
+    ("payables", "Openstaande crediteuren", "eur"),
+    ("pipeline_weighted", "Gewogen pipeline", "eur"),
+    ("pipeline_nominal", "Pipeline nominaal", "eur"),
+    ("pipeline_count", "Aantal open kansen", "count"),
+    ("purchase_backlog", "Inkoopbacklog", "eur"),
+    ("deferred_revenue", "Nog te nemen omzet", "eur"),
+]
+
+
+def _overdue_total(side: dict) -> float:
+    """Alles behalve de nog niet vervallen posten — dat is het cijfer waar je 's ochtends
+    naar kijkt, niet het totaal openstaand."""
+    buckets = side.get("buckets") or []
+    return round(
+        sum(b.get("amount") or 0.0 for b in buckets if b.get("label") != "Nog niet vervallen"), 2
+    )
+
+
+def snapshot_from_payload(payload: dict) -> dict:
+    """Haalt de standen uit een al opgebouwde dashboard-payload. Bewust GEEN eigen
+    Odoo-queries: het vastleggen mag het dashboard geen milliseconde trager maken."""
+    cash = payload.get("cash") or {}
+    aging = payload.get("aging") or {}
+    receivables = aging.get("receivables") or {}
+    payables = aging.get("payables") or {}
+    pipeline = payload.get("pipeline") or {}
+    backlog = payload.get("purchase_backlog") or {}
+    return {
+        "cash": cash.get("available_now"),
+        "credit_headroom": cash.get("credit_headroom"),
+        "receivables": receivables.get("total"),
+        "receivables_overdue": _overdue_total(receivables),
+        "payables": payables.get("total"),
+        "pipeline_weighted": pipeline.get("weighted_total"),
+        "pipeline_nominal": pipeline.get("nominal_total"),
+        "pipeline_count": pipeline.get("opportunity_count"),
+        "purchase_backlog": backlog.get("total"),
+        "deferred_revenue": payload.get("deferred_revenue_balance"),
+    }
+
+
+def build_snapshot_series(days: int = 365) -> dict:
+    """De vastgelegde reeks voor het dashboard, plus de omschrijving van elke meting."""
+    rows = db.load_snapshots(days=days)
+    return {
+        "metrics": [{"key": k, "label": label, "unit": unit} for k, label, unit in SNAPSHOT_METRICS],
+        "points": rows,
+        "count": len(rows),
+        "first_date": rows[0]["date"] if rows else None,
+        "last_date": rows[-1]["date"] if rows else None,
+        "storage": "postgres" if db.configured() else "geen",
+    }

@@ -4,6 +4,9 @@ met app.kpis.build_dashboard_payload gemocked (dus geen echte Odoo-aanroep nodig
 """
 
 import base64
+import time
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -43,11 +46,16 @@ FAKE_PAYLOAD = {
 }
 
 
-def test_healthz_requires_no_auth():
+def test_healthz_requires_no_auth_and_leaks_no_business_data():
     client = TestClient(main.app)
     resp = client.get("/healthz")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    body = resp.json()
+    assert body["status"] == "ok"
+    # alleen ja/nee-vlaggen over de opzet, geen cijfers of namen
+    assert set(body) == {"status", "database", "snapshot_scheduler"}
+    assert body["database"] is False          # geen DATABASE_URL in de tests
+    assert body["snapshot_scheduler"] is False
 
 
 def test_dashboard_requires_auth():
@@ -463,3 +471,144 @@ def test_api_pl_lines_passes_the_codes_and_period_through(monkeypatch):
                       headers=_auth_header("testuser", "testpass"))
     assert resp.status_code == 200
     assert seen == {"codes": ["430500", "431000"], "start": "2026-08-01", "end": "2026-09-01"}
+
+
+def test_loading_the_kpis_records_todays_snapshot(monkeypatch):
+    saved = []
+    monkeypatch.setattr(main.kpis, "build_dashboard_payload", lambda **kw: FAKE_PAYLOAD)
+    monkeypatch.setattr(main.db, "configured", lambda: True)
+    monkeypatch.setattr(main.db, "snapshot_exists_today", lambda: False)
+    monkeypatch.setattr(main.db, "save_snapshot", lambda payload: saved.append(payload))
+    main._cache.clear()
+
+    client = TestClient(main.app)
+    resp = client.get("/api/kpis?months=2", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 200
+    assert len(saved) == 1
+    assert saved[0]["cash"] == FAKE_PAYLOAD["cash"]["available_now"]
+
+
+def test_a_snapshot_is_recorded_once_a_day(monkeypatch):
+    saved = []
+    monkeypatch.setattr(main.kpis, "build_dashboard_payload", lambda **kw: FAKE_PAYLOAD)
+    monkeypatch.setattr(main.db, "configured", lambda: True)
+    monkeypatch.setattr(main.db, "snapshot_exists_today", lambda: True)
+    monkeypatch.setattr(main.db, "save_snapshot", lambda payload: saved.append(payload))
+    main._cache.clear()
+
+    client = TestClient(main.app)
+    client.get("/api/kpis?months=4", headers=_auth_header("testuser", "testpass"))
+    assert saved == []
+
+
+def test_a_failing_snapshot_never_breaks_the_dashboard(monkeypatch):
+    def boom():
+        raise RuntimeError("database ligt eruit")
+
+    monkeypatch.setattr(main.kpis, "build_dashboard_payload", lambda **kw: FAKE_PAYLOAD)
+    monkeypatch.setattr(main.db, "configured", lambda: True)
+    monkeypatch.setattr(main.db, "snapshot_exists_today", boom)
+    main._cache.clear()
+
+    client = TestClient(main.app)
+    resp = client.get("/api/kpis?months=5", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 200
+    assert resp.json()["cash"]["available_now"] == FAKE_PAYLOAD["cash"]["available_now"]
+
+
+def test_the_snapshot_endpoint_reports_a_missing_database():
+    # zonder DATABASE_URL (de situatie in de tests) hoort dit een nette 503 te geven en
+    # niet stilletjes "gelukt" te melden
+    client = TestClient(main.app)
+    resp = client.post("/api/snapshot", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 503
+    assert "DATABASE_URL" in resp.json()["detail"]
+
+
+def test_the_snapshot_endpoint_forces_a_new_measurement(monkeypatch):
+    """Ook als de meting van vandaag er al staat, moet dit endpoint 'm overschrijven —
+    anders kun je na een correctie in Odoo niet opnieuw meten."""
+    saved = []
+    monkeypatch.setattr(main.db, "configured", lambda: True)
+    monkeypatch.setattr(main.snapshot.db, "configured", lambda: True)
+    monkeypatch.setattr(main.snapshot.db, "snapshot_exists_today", lambda: True)
+    monkeypatch.setattr(main.snapshot.db, "save_snapshot", lambda standen: saved.append(standen))
+    monkeypatch.setattr(main.snapshot.kpis, "build_dashboard_payload", lambda **kw: FAKE_PAYLOAD)
+
+    client = TestClient(main.app)
+    resp = client.post("/api/snapshot", headers=_auth_header("testuser", "testpass"))
+    assert resp.status_code == 200
+    assert len(saved) == 1
+    assert resp.json()["captured"]["cash"] == FAKE_PAYLOAD["cash"]["available_now"]
+
+
+def test_api_snapshots_requires_authentication():
+    client = TestClient(main.app)
+    assert client.get("/api/snapshots").status_code == 401
+
+
+# --- Ingebouwde planner ------------------------------------------------------
+
+def test_the_scheduler_does_not_start_without_a_database():
+    # in de tests staat geen DATABASE_URL; dan valt er niets vast te leggen en hoeft er
+    # ook geen achtergrondtaak te draaien
+    assert main.snapshot.start_scheduler() is False
+    assert main.snapshot.scheduler_running() is False
+
+
+def test_the_scheduler_can_be_switched_off(monkeypatch):
+    monkeypatch.setattr(main.snapshot.db, "configured", lambda: True)
+    monkeypatch.setattr(main.snapshot.config, "SNAPSHOT_SCHEDULER_ENABLED", False)
+    assert main.snapshot.start_scheduler() is False
+    assert main.snapshot.scheduler_running() is False
+
+
+def test_the_scheduler_starts_and_stops_cleanly(monkeypatch):
+    monkeypatch.setattr(main.snapshot.db, "configured", lambda: True)
+    monkeypatch.setattr(main.snapshot.config, "SNAPSHOT_SCHEDULER_ENABLED", True)
+    # meteen aan de slag, en daarna lang wachten zodat de test niet op de lus hoeft
+    monkeypatch.setattr(main.snapshot.config, "SNAPSHOT_STARTUP_DELAY_SECONDS", 0)
+    monkeypatch.setattr(main.snapshot.config, "SNAPSHOT_CHECK_MINUTES", 60)
+    calls = []
+    monkeypatch.setattr(main.snapshot, "capture", lambda: calls.append(1))
+
+    assert main.snapshot.start_scheduler() is True
+    for _ in range(50):
+        if calls:
+            break
+        time.sleep(0.02)
+    assert calls, "de planner heeft niet gemeten"
+    main.snapshot.stop_scheduler()
+    assert main.snapshot.scheduler_running() is False
+
+
+def test_a_failing_measurement_keeps_the_scheduler_alive(monkeypatch):
+    """Een mislukte meting (Odoo eruit, database traag) mag de achtergrondtaak niet
+    doden — anders stopt het vastleggen stilletjes tot de volgende deploy."""
+    monkeypatch.setattr(main.snapshot.db, "configured", lambda: True)
+    monkeypatch.setattr(main.snapshot.config, "SNAPSHOT_SCHEDULER_ENABLED", True)
+    monkeypatch.setattr(main.snapshot.config, "SNAPSHOT_STARTUP_DELAY_SECONDS", 0)
+    monkeypatch.setattr(main.snapshot.config, "SNAPSHOT_CHECK_MINUTES", 60)
+    calls = []
+
+    def boom():
+        calls.append(1)
+        raise RuntimeError("Odoo ligt eruit")
+
+    monkeypatch.setattr(main.snapshot, "capture", boom)
+    assert main.snapshot.start_scheduler() is True
+    for _ in range(50):
+        if calls:
+            break
+        time.sleep(0.02)
+    assert calls
+    assert main.snapshot.scheduler_running() is True
+    main.snapshot.stop_scheduler()
+
+
+def test_capture_skips_when_todays_measurement_already_exists(monkeypatch):
+    monkeypatch.setattr(main.snapshot.db, "configured", lambda: True)
+    monkeypatch.setattr(main.snapshot.db, "snapshot_exists_today", lambda: True)
+    monkeypatch.setattr(main.snapshot.kpis, "build_dashboard_payload",
+                        lambda **kw: pytest.fail("Odoo hoort niet bevraagd te worden"))
+    assert main.snapshot.capture() is None

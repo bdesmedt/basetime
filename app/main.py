@@ -14,16 +14,31 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from contextlib import asynccontextmanager
+
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import config, db, kpis
+from . import config, db, kpis, snapshot
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("basetime-dashboard")
 
-app = FastAPI(title="Basetime KPI-dashboard")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start bij het opstarten de planner die de standen vastlegt, en zet 'm bij het
+    afsluiten weer stil. De planner draait mee in deze webserver, zodat er op Railway
+    geen aparte cron-service nodig is (zie app/snapshot.py)."""
+    snapshot.start_scheduler()
+    try:
+        yield
+    finally:
+        snapshot.stop_scheduler()
+
+
+app = FastAPI(title="Basetime KPI-dashboard", lifespan=lifespan)
 security = HTTPBasic()
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "dashboard.html"
@@ -95,8 +110,34 @@ def check_auth(credentials: HTTPBasicCredentials = Depends(security)) -> None:
 
 @app.get("/healthz")
 def healthz():
-    """Onbeveiligde health-check voor Railway — geeft geen bedrijfsdata terug."""
-    return {"status": "ok"}
+    """Onbeveiligde health-check voor Railway — geeft geen bedrijfsdata terug.
+    De twee vlaggen erbij zeggen alleen óf er een database is gekoppeld en óf de planner
+    draait; geen cijfers, geen namen."""
+    return {
+        "status": "ok",
+        "database": db.configured(),
+        "snapshot_scheduler": snapshot.scheduler_running(),
+    }
+
+
+def _capture_snapshot(payload: dict) -> None:
+    """Legt de standen van vandaag vast zodra er verse cijfers uit Odoo komen.
+
+    Waarom hier en niet in een aparte taak: de payload is op dit moment toch al opgebouwd,
+    dus het kost geen enkele extra Odoo-query. Er is óók een endpoint (/api/snapshot) voor
+    een geplande taak, zodat de reeks blijft doorlopen als niemand het dashboard opent.
+
+    Dit mag nooit een paginabezoek laten mislukken: gaat het schrijven mis, dan komt er een
+    regel in de log en verder niets."""
+    if not db.configured():
+        return
+    try:
+        if db.snapshot_exists_today():
+            return
+        db.save_snapshot(kpis.snapshot_from_payload(payload))
+        logger.info("Momentopname van vandaag vastgelegd.")
+    except Exception as exc:
+        logger.warning("Kon de momentopname niet vastleggen: %s", exc)
 
 
 @app.get("/api/kpis")
@@ -108,9 +149,40 @@ def api_kpis(
     _auth: None = Depends(check_auth),
 ):
     period = _parse_period(months, date_from, date_to)
-    return _cached(
-        _cache, _period_key(period), refresh, lambda: kpis.build_dashboard_payload(**period)
-    )
+
+    def build():
+        payload = kpis.build_dashboard_payload(**period)
+        _capture_snapshot(payload)
+        return payload
+
+    return _cached(_cache, _period_key(period), refresh, build)
+
+
+@app.get("/api/snapshots")
+def api_snapshots(
+    days: int = Query(365, ge=1, le=1825),
+    _auth: None = Depends(check_auth),
+):
+    """De vastgelegde standen door de tijd. Komt uit de eigen database, niet uit Odoo —
+    Odoo kan deze reeks niet reconstrueren."""
+    return kpis.build_snapshot_series(days=days)
+
+
+@app.post("/api/snapshot")
+def api_snapshot_now(_auth: None = Depends(check_auth)):
+    """Legt de standen van dit moment vast, ook als die van vandaag er al staat (die wordt
+    dan overschreven). Normaal gesproken doet de ingebouwde planner dit vanzelf; dit
+    endpoint is er om het handmatig af te dwingen of vanuit een externe planner."""
+    if not db.configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Er is geen DATABASE_URL ingesteld, dus er valt niets vast te leggen.",
+        )
+    try:
+        captured = snapshot.capture(force=True)
+    except db.StorageUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"ok": True, "captured": captured}
 
 
 @app.get("/api/inventory")
